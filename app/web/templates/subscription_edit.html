@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}编辑订阅 · mtbox{% endblock %}
+{% block content %}
+<h1>编辑订阅</h1>
+
+<form method="post" action="/subscriptions/{{ sub.id }}/edit" class="card form form-narrow">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <p class="hint">
+    类型：{{ '电影' if sub.kind == 'movie' else '剧集' }}（不可修改；需要改类型请新建订阅）
+  </p>
+
+  <label>媒体库分类（可选）
+    <input name="library_category" value="{{ sub.library_category or '' }}" list="library-category-options" placeholder="留空按类型使用 电影 / 电视剧">
+    <datalist id="library-category-options">
+      <option value="电影"></option>
+      <option value="电视剧"></option>
+      <option value="动漫"></option>
+      <option value="纪录片"></option>
+      <option value="综艺"></option>
+    </datalist>
+  </label>
+  <p class="hint">填写分类后，默认模板中的 Movies / TV 顶层目录会被替换为该分类（如 动漫/…）；
+    自定义模板可写 {category} 自行控制位置。留空时保持 Movies / TV。</p>
+
+  <label>标题（用于搜索，建议中文名）
+    <input name="title" value="{{ sub.title }}" required>
+  </label>
+  <label>原名 / 英文名
+    <input name="original_title" value="{{ sub.original_title or '' }}">
+  </label>
+
+  <div class="grid-2">
+    <label>年份
+      <input name="year" value="{{ sub.year or '' }}" inputmode="numeric">
+    </label>
+    <label>季
+      <input name="season" value="{{ sub.season }}" inputmode="numeric">
+    </label>
+  </div>
+
+  <div class="grid-2">
+    <label>豆瓣 ID
+      <input name="douban_id" value="{{ sub.douban_id or '' }}" inputmode="numeric">
+    </label>
+    <label>IMDb ID
+      <input name="imdb_id" value="{{ sub.imdb_id or '' }}">
+    </label>
+  </div>
+
+  <div class="grid-2">
+    <label>集数偏移（显示集 = 发布集 + 偏移）
+      <input name="episode_offset" value="{{ sub.episode_offset }}" inputmode="numeric">
+    </label>
+    <label>检查间隔（分钟）
+      <input name="interval_min" value="{{ sub.interval_min }}" inputmode="numeric">
+    </label>
+  </div>
+
+  <div class="grid-2">
+    <label>起始集（可空）
+      <input name="episode_from" value="{{ sub.episode_from or '' }}" inputmode="numeric">
+    </label>
+    <label>结束集（可空）
+      <input name="episode_to" value="{{ sub.episode_to or '' }}" inputmode="numeric">
+    </label>
+  </div>
+
+  <label class="checkbox">
+    <input type="checkbox" name="auto_grab" {% if sub.auto_grab %}checked{% endif %}> 自动下载最优条目（评分通过后直接抓取；不勾选也会自动选优并显示在候选页）
+  </label>
+
+  <button type="submit" class="primary">保存</button>
+</form>
+<p class="hint">修改命名模板或分类只影响之后整理的文件，已整理文件不会自动移动。</p>
+{% endblock %}

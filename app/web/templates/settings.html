@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}设置 · mtbox{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>设置</h1>
+</div>
+<p class="hint">运行时可调参数保存在本地 SQLite。凭据留空表示保持当前值，保存后立即生效，页面与日志中不会显示明文。</p>
+
+<form method="post" action="/settings" class="card form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <h2>账号凭据</h2>
+  <div class="grid-2">
+    <label>MT API Key
+      <input type="password" name="mt_api_key" value="" maxlength="512" autocomplete="new-password"
+             placeholder="{% if mt_status.configured %}已配置（{{ '设置页' if mt_status.source == 'settings' else '环境变量' }}），留空保持不变{% else %}未配置，请填写 M-Team 存取令牌{% endif %}">
+    </label>
+    <label>qBittorrent 密码
+      <input type="password" name="qb_password" value="" maxlength="512" autocomplete="new-password"
+             placeholder="{% if qb_status.configured %}已配置（{{ '设置页' if qb_status.source == 'settings' else '环境变量' }}），留空保持不变{% else %}未配置，请填写 qB 密码{% endif %}">
+    </label>
+  </div>
+  <p class="hint">MT 只使用 Access Token（x-api-key），不会使用 Cookie 或登录站点。qB 用户名仍由 <code>QB_USERNAME</code> 提供；修改密码后，下次访问 qB 时会用新密码重新登录。</p>
+  <div class="grid-2">
+    <label class="checkbox">
+      <input type="checkbox" name="clear_mt_api_key">
+      清除设置页保存的 MT API Key（回退到 .env）
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="clear_qb_password">
+      清除设置页保存的 qB 密码（回退到 .env）
+    </label>
+  </div>
+
+  <h2>订阅与候选</h2>
+  <div class="grid-2">
+    <label>默认检查间隔（分钟）
+      <input type="number" name="default_interval_min" min="1" max="1440" value="{{ values.default_interval_min }}">
+    </label>
+    <label>候选最低分
+      <input type="number" step="0.1" name="min_score" min="0" max="100" value="{{ values.min_score }}">
+    </label>
+    <label>每订阅最多保留自动忽略
+      <input type="number" name="max_candidates" min="1" max="500" value="{{ values.max_candidates }}">
+    </label>
+    <label>候选保留天数
+      <input type="number" name="candidate_ttl_days" min="1" max="365" value="{{ values.candidate_ttl_days }}">
+    </label>
+    <label>合集最少缺集数
+      <input type="number" name="season_pack_min_missing" min="1" max="100" value="{{ values.season_pack_min_missing }}">
+    </label>
+    <label>每次检查最多抓取种子数
+      <input type="number" name="max_grabs_per_check" min="1" max="50" value="{{ values.max_grabs_per_check }}">
+    </label>
+    <label>追新窗口（天）
+      <input type="number" name="new_episode_window_days" min="1" max="365" value="{{ values.new_episode_window_days }}">
+    </label>
+    <label>24h 非免费下载预算（GB，0 为不限）
+      <input type="number" name="daily_download_budget_gb" min="0" max="100000" value="{{ values.daily_download_budget_gb }}">
+    </label>
+    <label>24h 搜索预算（次，留空恢复 .env 默认）
+      <input type="number" name="search_daily_budget" min="1" max="100000" value="{{ values.search_daily_budget }}">
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="auto_grab_default" {% if values.auto_grab_default == 'true' %}checked{% endif %}>
+      新建订阅默认自动下载最优条目
+    </label>
+  </div>
+
+  <h2>保种与护栏</h2>
+  <div class="grid-2">
+    <label>最短做种（小时）
+      <input type="number" name="min_seed_hours" min="0" max="100000" value="{{ values.min_seed_hours }}">
+    </label>
+    <label>最长做种（小时，0 为不强制）
+      <input type="number" name="max_seed_hours" min="0" max="100000" value="{{ values.max_seed_hours }}">
+    </label>
+    <label>最低分享率
+      <input type="number" step="0.01" name="min_ratio" min="0" max="100" value="{{ values.min_ratio }}">
+    </label>
+    <label>分享率低于此值只允许免费
+      <input type="number" step="0.01" name="ratio_pause_nonfree" min="0" max="100" value="{{ values.ratio_pause_nonfree }}">
+    </label>
+    <label>分享率低于此值全部暂停
+      <input type="number" step="0.01" name="ratio_pause_all" min="0" max="100" value="{{ values.ratio_pause_all }}">
+    </label>
+    <label>磁盘水位阈值（%）
+      <input type="number" name="disk_pause_percent" min="1" max="99" value="{{ values.disk_pause_percent }}">
+    </label>
+  </div>
+
+  <h2>命名模板</h2>
+  <label>电影
+    <input type="text" name="movie_path_template" value="{{ values.movie_path_template }}">
+  </label>
+  <label>剧集
+    <input type="text" name="tv_path_template" value="{{ values.tv_path_template }}">
+  </label>
+  <p class="hint">可用占位符：library category title original_title year season episode episode_end resolution video_codec ext group；必须包含 title。{category} 取订阅的“媒体库分类”，留空时电影为“电影”、剧集为“电视剧”。模板未写 {category} 时，若订阅设置了分类，渲染结果中的 Movies / TV 顶层目录会自动替换为该分类。</p>
+
+  <h2>搜索映射</h2>
+  <div class="grid-2">
+    <label>mode_map（JSON）
+      <textarea name="mode_map" rows="4">{{ values.mode_map }}</textarea>
+    </label>
+    <label>category_map（JSON）
+      <textarea name="category_map" rows="4">{{ values.category_map }}</textarea>
+    </label>
+  </div>
+
+  <h2>通知</h2>
+  <label>notify_config（JSON）
+    <textarea name="notify_config" rows="10">{{ values.notify_config }}</textarea>
+  </label>
+  <p class="hint">支持 wecom、serverchan、smtp。示例：{"wecom": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."}。通知失败只记日志，不影响抓取与整理。</p>
+
+  <div class="actions">
+    <button type="submit" class="primary">保存设置</button>
+    <a class="button" href="/">返回仪表盘</a>
+  </div>
+</form>
+{% endblock %}

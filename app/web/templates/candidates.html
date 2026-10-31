@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}候选 · mtbox{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>候选</h1>
+  {% if view == 'best' %}
+  <a class="button" href="/candidates?view=all{% if sub_id %}&sub={{ sub_id }}{% endif %}">查看全部候选</a>
+  {% else %}
+  <a class="button" href="/candidates{% if sub_id %}?sub={{ sub_id }}{% endif %}">只看最优</a>
+  {% endif %}
+</div>
+<p class="hint">
+  {% if view == 'best' %}
+  每个订阅显示补齐已播出集数所需的最优种子组合；一条种子覆盖不了时会出现多条。
+  系统按“仍缺已播集数 → 评分 → 免费 → 做种”排序，能确认集数的种子优先；
+  无法确认覆盖范围的“合集”只作为兜底。新集出现后会自动追加到组合中。
+  {% else %}
+  全部候选。日常使用建议回到“只看最优”，避免在大量发布里手动筛选。
+  {% endif %}
+  “忽略”后自动检查不再复活该种子。
+</p>
+
+<form class="filterbar" method="get" action="/candidates">
+  {% if view != 'best' %}<input type="hidden" name="view" value="all">{% endif %}
+  <label>订阅
+    <select name="sub" class="sub-select" onchange="this.form.submit()">
+      <option value="">全部订阅（{{ total_count }} 条）</option>
+      {% for item in subscriptions %}
+      <option value="{{ item.id }}" {% if item.id == sub_id %}selected{% endif %}>
+        {{ item.title }}（{{ item.candidate_count }}）{% if item.deleted_at %} · 已删除订阅{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="button primary" type="submit">筛选</button>
+  {% if sub_id %}
+  <a class="button" href="/candidates{% if view != 'best' %}?view=all{% endif %}">清除筛选</a>
+  {% endif %}
+</form>
+
+{% if scope_count %}
+<div class="bulkbar">
+  <form method="post" action="/candidates/delete"
+        onsubmit="return confirm('确定删除筛选范围内的全部候选吗？该操作不可撤销，已下载和下载中的任务不受影响。');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="sub" value="{{ sub_id if sub_id is not none else '' }}">
+    <input type="hidden" name="view" value="{{ view }}">
+    <label class="checkbox" title="手动忽略的记录删除后，后续自动检查可能会重新出现">
+      <input type="checkbox" name="include_ignored" value="1"> 同时删除已忽略记录
+    </label>
+    <button type="submit" class="danger">
+      {% if selected_sub %}删除《{{ selected_sub.title }}》的候选{% else %}删除全部订阅的候选{% endif %}
+    </button>
+    <span class="muted small">
+      筛选范围内共 {{ scope_count }} 条记录{% if view == 'best' %}（含未展示的备选）{% endif %}；默认只删除候选，勾选后连同已忽略记录一起删除，已下载任务不受影响。
+    </span>
+  </form>
+</div>
+{% endif %}
+
+{% if items %}
+{% set state_labels = {'candidate': '候选', 'grabbed': '已抓取', 'downloading': '下载中',
+  'completed': '已完成', 'organized': '已整理', 'organize_failed': '整理失败',
+  'ignored': '已忽略', 'failed': '失败', 'deleted': '已删除'} %}
+<table class="checks candidates">
+  <thead>
+    <tr><th>发布</th><th>订阅</th><th>集数</th><th>缺集</th><th>体积</th><th>评分</th><th>判断</th><th>操作</th></tr>
+  </thead>
+  <tbody>
+    {% for item in items %}
+    <tr>
+      <td>
+        <div class="release">{{ item.title }}</div>
+        <div class="muted small">
+          mt_id {{ item.mt_id }}
+          {% if item.seeders %}· 做种 {{ item.seeders }}{% endif %}
+          {% if item.discount %}· {{ item.discount }}{% endif %}
+          {% if item.free %}<span class="badge badge-free">FREE</span>{% endif %}
+        </div>
+      </td>
+      <td class="small">
+        {{ item.sub_title }}
+        {% if item.alt_count and (view != 'best' or item.plan_index is not defined or item.plan_index == 1) %}
+          <div class="muted">另有 {{ item.alt_count }} 条备选</div>
+        {% endif %}
+        {% if view == 'best' and item.plan_index is defined %}
+          {% if item.plan_index > 1 %}
+          <div class="muted">补集方案 {{ item.plan_index }}/{{ item.plan_count }}</div>
+          {% elif item.sub_kind == 'tv' and item.plan_count %}
+          <div class="muted">最优组合 {{ item.plan_count }} 个种子 · 按批次抓取</div>
+          {% endif %}
+        {% endif %}
+      </td>
+      <td class="small">{{ item.episodes or '—' }}</td>
+      <td class="small">
+        {% if item.missing_count is defined %}
+          {% if item.sub_kind == 'movie' %}—{% else %}缺 {{ item.missing_count }} 集{% endif %}
+        {% else %}—{% endif %}
+      </td>
+      <td class="num">{{ item.size_gb }} GB</td>
+      <td class="num">{{ item.score if item.score is not none else '—' }}</td>
+      <td class="small">
+        {% if view == 'best' %}<span class="badge badge-warn">最优{% if item.plan_count and item.plan_count > 1 %} {{ item.plan_index }}/{{ item.plan_count }}{% endif %}</span>{% endif %}
+        <span class="badge state-{{ item.state }}" title="{{ item.state }}">{{ state_labels.get(item.state, item.state) }}</span>
+        {% if item.ignored_by %}<span class="badge">忽略:{{ item.ignored_by }}</span>{% endif %}
+        {% if item.reasons %}
+        {% set failed_count = item.reasons | rejectattr('passed') | list | length %}
+        <details class="reasons-box">
+          <summary>规则详情 {{ item.reasons | length }} 项{% if failed_count %} · <span class="error-text">{{ failed_count }} 项未通过</span>{% endif %}</summary>
+          <ul class="reasons">
+            {% for rule in item.reasons %}
+            <li class="{{ 'ok' if rule.passed else 'fail' }}">
+              {{ rule.rule }}{% if rule.detail %} · {{ rule.detail }}{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+      </td>
+      <td class="nowrap">
+        <div class="row-actions">
+        {% if item.state == 'candidate' %}
+        <form method="post" action="/candidates/{{ item.id }}/grab" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="sub" value="{{ sub_id if sub_id is not none else '' }}">
+          <input type="hidden" name="view" value="{{ view }}">
+          <button type="submit" class="primary">下载本条</button>
+        </form>
+        {% else %}
+        <form method="post" action="/candidates/{{ item.id }}/revive" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="sub" value="{{ sub_id if sub_id is not none else '' }}">
+          <input type="hidden" name="view" value="{{ view }}">
+          <button type="submit">恢复为候选</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/candidates/{{ item.id }}/ignore" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="sub" value="{{ sub_id if sub_id is not none else '' }}">
+          <input type="hidden" name="view" value="{{ view }}">
+          <button type="submit" class="danger">忽略</button>
+        </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% if sub_id %}
+<p class="hint">该订阅下没有候选。可以到 <a href="/subscriptions">订阅</a> 页手动触发一次检查，或点“清除筛选”查看全部。</p>
+{% else %}
+<p class="hint">还没有候选。到 <a href="/subscriptions">订阅</a> 页手动触发一次检查。</p>
+{% endif %}
+{% endif %}
+{% endblock %}

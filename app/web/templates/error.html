@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · mtbox{% endblock %}
+{% block content %}
+<div class="error-page">
+  <div class="error-code">{{ code }}</div>
+  <h1>{{ message }}</h1>
+  <div class="actions">
+    <a class="button primary" href="/">返回仪表盘</a>
+  </div>
+</div>
+{% endblock %}

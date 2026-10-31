@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}新建订阅 · mtbox{% endblock %}
+{% block content %}
+<h1>新建订阅</h1>
+
+<form method="post" action="/subscriptions/new" class="card form form-narrow">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <label>类型
+    <select name="kind">
+      <option value="tv" {% if prefill.kind == 'tv' %}selected{% endif %}>剧集</option>
+      <option value="movie" {% if prefill.kind == 'movie' %}selected{% endif %}>电影</option>
+    </select>
+  </label>
+
+  <label>媒体库分类（可选）
+    <input name="library_category" value="{{ prefill.library_category }}" list="library-category-options" placeholder="留空按类型使用 电影 / 电视剧">
+    <datalist id="library-category-options">
+      <option value="电影"></option>
+      <option value="电视剧"></option>
+      <option value="动漫"></option>
+      <option value="纪录片"></option>
+      <option value="综艺"></option>
+    </datalist>
+  </label>
+  <p class="hint">在“设置 → 命名模板”中写 {category} 即可按此分类归档；留空时电影用“电影”，剧集用“电视剧”。</p>
+
+  <label>标题（用于搜索，建议中文名）
+    <input name="title" value="{{ prefill.title }}" required>
+  </label>
+  <label>原名 / 英文名
+    <input name="original_title" value="{{ prefill.original_title }}">
+  </label>
+
+  <div class="grid-2">
+    <label>年份
+      <input name="year" value="{{ prefill.year }}" inputmode="numeric">
+    </label>
+    <label>季
+      <input name="season" value="{{ prefill.season }}" inputmode="numeric">
+    </label>
+  </div>
+
+  <div class="grid-2">
+    <label>豆瓣 ID
+      <input name="douban_id" value="{{ prefill.douban_id }}" inputmode="numeric">
+    </label>
+    <label>IMDb ID
+      <input name="imdb_id" value="{{ prefill.imdb_id }}">
+    </label>
+  </div>
+
+  <div class="grid-2">
+    <label>集数偏移（显示集 = 发布集 + 偏移）
+      <input name="episode_offset" value="{{ prefill.episode_offset }}" inputmode="numeric">
+    </label>
+    <label>检查间隔（分钟）
+      <input name="interval_min" value="{{ prefill.interval_min }}" inputmode="numeric">
+    </label>
+  </div>
+
+  <div class="grid-2">
+    <label>起始集（可空）
+      <input name="episode_from" inputmode="numeric">
+    </label>
+    <label>结束集（可空）
+      <input name="episode_to" inputmode="numeric">
+    </label>
+  </div>
+
+  <label class="checkbox">
+    <input type="checkbox" name="auto_grab" {% if prefill.auto_grab %}checked{% endif %}> 自动下载最优条目（评分通过后直接抓取；不勾选也会自动选优并显示在候选页）
+  </label>
+
+  <button type="submit" class="primary">保存</button>
+</form>
+<p class="hint">示例：第二季从第 13 集开始按 E13 发布，则季填 2、集数偏移填 -12。</p>
+{% endblock %}

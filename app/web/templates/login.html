@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}登录 · mtbox{% endblock %}
+{% block content %}
+<section class="narrow">
+  <h1>登录</h1>
+  {% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+  {% if not configured %}
+  <p class="hint">尚未配置管理员密码。请在 <code>.env</code> 中设置
+    <code>ADMIN_PASSWORD</code>，然后重启服务。</p>
+  {% endif %}
+  <form method="post" action="/login" class="card form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>用户名
+      <input name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>密码
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="primary" {% if not configured %}disabled{% endif %}>登录</button>
+  </form>
+</section>
+{% endblock %}

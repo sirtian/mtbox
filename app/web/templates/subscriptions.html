@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}订阅 · mtbox{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>订阅</h1>
+  <a class="button primary" href="/subscriptions/new">新建订阅</a>
+</div>
+
+<div class="tabbar">
+  <a class="button {% if view != 'done' %}primary{% endif %}" href="/subscriptions">进行中{% if active_count %} ({{ active_count }}){% endif %}</a>
+  <a class="button {% if view == 'done' %}primary{% endif %}" href="/subscriptions?view=done">已完成{% if done_count %} ({{ done_count }}){% endif %}</a>
+</div>
+
+{% if items %}
+{% set status_labels = {'active': '运行中', 'paused': '已暂停', 'done': '已完成'} %}
+<table class="checks subscriptions">
+  <thead>
+    <tr><th>标题</th><th>类型</th><th>进度</th><th>状态</th><th>操作</th></tr>
+  </thead>
+  <tbody>
+    {% for row in items %}
+    {% set sub = row.sub %}
+    {% set progress = row.progress %}
+    <tr>
+      <td>
+        <div>{{ sub.title }}{% if sub.year %}（{{ sub.year }}）{% endif %}</div>
+        <div class="muted small">
+          {% if sub.douban_id %}豆瓣 {{ sub.douban_id }} · {% endif %}
+          {% if sub.imdb_id %}{{ sub.imdb_id }} · {% endif %}
+          间隔 {{ sub.interval_min }} 分钟
+          {% if sub.episode_offset %}· 集数偏移 {{ sub.episode_offset }}{% endif %}
+        </div>
+        {% if sub.last_error %}<div class="small error-text">{{ sub.last_error }}</div>{% endif %}
+      </td>
+      <td>
+        {% if sub.kind == 'movie' %}电影{% else %}电视剧 · S{{ '%02d' | format(sub.season) }}{% endif %}
+        {% if sub.library_category %}<div class="muted small">{{ sub.library_category }}</div>{% endif %}
+      </td>
+      <td class="small wide">
+        {% if sub.kind == 'tv' %}
+          {% if progress.total_target %}
+            <div>
+              总 {{ progress.total_target }} 集 · 已下载 {{ progress.downloaded }} 集 · 待下载 {{ progress.waiting or 0 }} 集
+              {% if progress.unaired %}· 待上线 {{ progress.unaired }} 集{% endif %}
+            </div>
+          {% elif progress.available %}
+            <div>
+              已上线至第 {{ progress.available }} 集 · 已下载 {{ progress.downloaded }} 集
+              {% if progress.waiting is not none %}· 待下载 {{ progress.waiting }} 集{% endif %}
+            </div>
+          {% else %}
+            <div>已下载 {{ progress.downloaded }} 集 · 总集数待定</div>
+          {% endif %}
+          <div class="muted small">
+            已整理 {{ progress.organized }} 集
+            {% if progress.in_flight %}· 下载中 {{ progress.in_flight }} 集{% endif %}
+            {% if progress.episodes_source %}· 总集数来自 {{ progress.episodes_source }}{% endif %}
+          </div>
+          {% if progress.percent is not none %}
+          <div class="bar"><span style="width: {{ progress.percent }}%"></span></div>
+          {% endif %}
+        {% else %}
+          {% if progress.movie_state == 'organized' %}已整理
+          {% elif progress.movie_state == 'organize_failed' %}整理失败
+          {% elif progress.movie_state in ('grabbed', 'downloading') %}下载中
+          {% elif progress.movie_state == 'completed' %}待整理
+          {% elif progress.movie_state == 'failed' %}下载失败
+          {% else %}未整理{% endif %}
+        {% endif %}
+      </td>
+      <td>
+        <span class="badge state-{{ sub.status }}">{{ status_labels.get(sub.status, sub.status) }}</span>
+        <span class="badge">自动选优</span>
+        {% if sub.auto_grab %}<span class="badge badge-warn">自动下载</span>{% endif %}
+      </td>
+      <td>
+        <div class="row-actions">
+        <a class="button" href="/subscriptions/{{ sub.id }}/edit">编辑</a>
+        <form method="post" action="/subscriptions/{{ sub.id }}/check" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="primary">检查</button>
+        </form>
+        <form method="post" action="/subscriptions/{{ sub.id }}/grab-best" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" title="抓取最优组合，补齐所有已播出但未下载的集数">下载最优</button>
+        </form>
+        <form method="post" action="/subscriptions/{{ sub.id }}/auto-grab" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="enabled" value="{{ '0' if sub.auto_grab else '1' }}">
+          <button type="submit">{{ '关闭自动下载' if sub.auto_grab else '开启自动下载' }}</button>
+        </form>
+        <form method="post" action="/subscriptions/{{ sub.id }}/status" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if sub.status == 'active' %}
+          <input type="hidden" name="status" value="paused">
+          <button type="submit">暂停</button>
+          {% else %}
+          <input type="hidden" name="status" value="active">
+          <button type="submit">恢复</button>
+          {% endif %}
+        </form>
+        <form method="post" action="/subscriptions/{{ sub.id }}/delete" class="inline"
+              onsubmit="return confirm('删除订阅？关联候选会被清理，该订阅的任务不再显示；已下载文件和 qB 保种保留，由保种策略继续管理。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="danger">删除</button>
+        </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% if view == 'done' %}
+<p class="hint">还没有已完成的订阅。剧集全部集数整理完成（或电影整理完成）后会自动移到这里，仍可编辑、检查、重新开启或删除。</p>
+{% else %}
+<p class="hint">还没有进行中的订阅。到 <a href="/search">搜索</a> 找到影视后点击“预填订阅”；已完成的订阅在「已完成」页签。</p>
+{% endif %}
+{% endif %}
+{% endblock %}

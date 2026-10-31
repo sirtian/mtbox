@@ -1,0 +1,28 @@
+services:
+  mtbox:
+    image: mtbox:0.5.0
+    container_name: mtbox
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      DOWNLOAD_DIR: /downloads
+      LIBRARY_DIR: /media
+      DATA_DIR: /config
+      # 容器内监听端口；默认 8080，可用 .env 的 PORT 修改
+      PORT: ${PORT:-8080}
+    ports:
+      # 宿主机端口默认 18080，避免与 qBittorrent 的 8080 冲突
+      - "${MTBOX_PORT:-18080}:${PORT:-8080}"
+    volumes:
+      # 改成极空间上的实际目录；/downloads 必须与 qBittorrent 容器的挂载一致
+      - ${MTBOX_CONFIG_PATH:-./config}:/config
+      - ${MTBOX_DOWNLOADS_PATH:-./downloads}:/downloads
+      - ${MTBOX_LIBRARY_PATH:-./media}:/media
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, urllib.request; p=os.environ.get('PORT', '8080'); sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + p + '/health', timeout=5).status == 200 else 1)"]
+      interval: 60s
+      timeout: 8s
+      retries: 3
+      start_period: 30s

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}任务 · mtbox{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>任务</h1>
+  <div class="actions">
+    <form method="post" action="/tasks/poll" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">刷新进度</button>
+    </form>
+    {% if view != 'organized' %}
+    <form method="post" action="/tasks/organize-pending" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="primary">整理待处理</button>
+    </form>
+    <a class="button" href="/tasks{{ '' if show_all else '?show=all' }}">
+      {% if show_all %}隐藏候选与已忽略{% elif hidden_count %}显示候选与已忽略 ({{ hidden_count }}){% else %}显示候选与已忽略{% endif %}
+    </a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="tabbar">
+  <a class="button {% if view != 'organized' %}primary{% endif %}" href="/tasks{{ '?show=all' if show_all else '' }}">下载与整理{% if active_count %} ({{ active_count }}){% endif %}</a>
+  <a class="button {% if view == 'organized' %}primary{% endif %}" href="/tasks?view=organized">已整理{% if organized_count %} ({{ organized_count }}){% endif %}</a>
+</div>
+
+{% if tasks %}
+{% set state_labels = {'candidate': '候选', 'grabbed': '已抓取', 'downloading': '下载中',
+  'completed': '已完成', 'organized': '已整理', 'organize_failed': '整理失败',
+  'ignored': '已忽略', 'failed': '失败', 'deleted': '已删除'} %}
+<table class="checks tasks">
+  <thead>
+    <tr>
+      <th>种子</th>
+      <th>订阅</th>
+      <th>进度</th>
+      <th>体积</th>
+      <th>状态</th>
+      <th>更新时间</th>
+      <th>操作</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for task in tasks %}
+    <tr>
+      <td>
+        <div class="release">{{ task.title }}</div>
+        <div class="muted small">
+          mt_id {{ task.mt_id }}
+          {% if task.seeders %}· 做种 {{ task.seeders }}{% endif %}
+          {% if task.discount %}· {{ task.discount }}{% endif %}
+          {% if task.episodes %}· {{ task.episodes }}{% endif %}
+        </div>
+        {% if task.error %}<div class="small error-text">{{ task.error }}</div>{% endif %}
+      </td>
+      <td class="small">{{ task.sub_title }}</td>
+      <td class="small">
+        <div class="bar"><span style="width: {{ (task.progress * 100) | round(1) }}%"></span></div>
+        <div class="muted">{{ (task.progress * 100) | round(1) }}%</div>
+      </td>
+      <td class="num">{{ task.size_gb }} GB</td>
+      <td><span class="badge state-{{ task.state }}" title="{{ task.state }}">{{ state_labels.get(task.state, task.state) }}</span></td>
+      <td class="muted small">{{ task.updated_display }}</td>
+      <td class="nowrap">
+        <div class="row-actions">
+        {% if task.state in ('completed', 'organize_failed', 'organized') %}
+        <form method="post" action="/tasks/{{ task.id }}/organize" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">{{ '重新整理' if task.state == 'organized' else '立即整理' }}</button>
+        </form>
+        {% endif %}
+        {% if task.state == 'failed' %}
+        <form method="post" action="/tasks/{{ task.id }}/retry" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit">重试</button>
+        </form>
+        {% endif %}
+        {% if task.state in ('candidate', 'failed') %}
+        <form method="post" action="/tasks/{{ task.id }}/delete" class="inline"
+              onsubmit="return confirm('删除该任务？删除后会从任务列表移除，qBittorrent 中的种子与文件也会删除。')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="danger">删除</button>
+        </form>
+        {% endif %}
+        {% if task.state not in ('completed', 'organize_failed', 'organized', 'failed', 'candidate') %}
+        <span class="muted">—</span>
+        {% endif %}
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{% if view == 'organized' %}
+<p class="hint">还没有已整理的任务。任务整理完成后会出现在这里，可在这里重新整理或查看归档进度。</p>
+{% elif hidden_count and not show_all %}
+<p class="hint">没有下载或整理中的任务。已隐藏 {{ hidden_count }} 个候选/已忽略条目，可点击上方“显示候选与已忽略”查看。</p>
+{% else %}
+<p class="hint">还没有任务。到 <a href="/search">搜索</a> 选择订阅并下载。</p>
+{% endif %}
+{% endif %}
+{% endblock %}

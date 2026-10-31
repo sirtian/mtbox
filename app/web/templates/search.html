@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}搜索 · mtbox{% endblock %}
+{% block content %}
+<h1>搜索 M-Team</h1>
+
+<form method="get" action="/search" class="card form row">
+  <input name="keyword" value="{{ keyword }}" placeholder="剧名 / 电影名 / 关键词" required>
+  <select name="mode">
+    <option value="normal" {% if mode == 'normal' %}selected{% endif %}>normal</option>
+    <option value="tvshow" {% if mode == 'tvshow' %}selected{% endif %}>tvshow</option>
+  </select>
+  <button type="submit" class="primary">搜索</button>
+</form>
+<p class="hint">手动搜索同样消耗 24h 搜索预算，并受最小间隔限制。</p>
+
+{% if error %}
+<div class="flash flash-error">
+  {{ error }}
+  {% if retry_after %}<span class="muted">（{{ retry_after }} 秒后重试）</span>{% endif %}
+</div>
+{% endif %}
+
+{% if keyword and not error %}
+<p class="muted">共 {{ total }} 条结果，显示 {{ results | length }} 条。</p>
+{% if not subscriptions %}
+<div class="flash flash-warn">还没有订阅。请先 <a href="/subscriptions/new">新建订阅</a>，或在结果行点击“预填订阅”。</div>
+{% endif %}
+<table class="checks results">
+  <thead>
+    <tr>
+      <th>种子</th>
+      <th>解析</th>
+      <th>体积</th>
+      <th>做种</th>
+      <th>操作</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in results %}
+    {% set item = row.item %}
+    {% set parsed = row.parsed %}
+    <tr>
+      <td>
+        <div class="release">{{ item.name }}</div>
+        <div class="muted small">
+          mt_id {{ item.id }} · {{ item.created_at or '' }}
+          {% if row.free %}<span class="badge badge-free">FREE</span>{% endif %}
+          {% if item.discount %}<span class="badge">{{ item.discount }}</span>{% endif %}
+          {% for label in item.labels %}<span class="badge">{{ label }}</span>{% endfor %}
+        </div>
+      </td>
+      <td class="small">
+        <div>{{ '剧集' if row.kind_guess == 'tv' else '电影' }}
+          {% if parsed.year %}· {{ parsed.year }}{% endif %}
+          {% if parsed.season %}· S{{ '%02d' | format(parsed.season) }}{% endif %}
+          {% if parsed.episodes %}· E{{ parsed.episodes | join('、E') }}{% endif %}
+        </div>
+        <div class="muted">
+          {{ parsed.resolution or '—' }} · {{ parsed.video_codec or '—' }}
+          {% if parsed.has_chinese_sub %}· 中字{% endif %}
+          {% if parsed.is_batch %}· 合集{% endif %}
+        </div>
+      </td>
+      <td class="num">{{ row.size_gb }} GB</td>
+      <td class="num">{{ item.seeders }}</td>
+      <td>
+        <div class="row-actions">
+        <a class="button" href="{{ row.prefill_url }}">预填订阅</a>
+        {% if subscriptions %}
+        <form method="post" action="/search/grab" class="stack">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="keyword" value="{{ keyword }}">
+          <input type="hidden" name="mt_id" value="{{ item.id }}">
+          <input type="hidden" name="name" value="{{ item.name }}">
+          <input type="hidden" name="size_bytes" value="{{ item.size_bytes }}">
+          <input type="hidden" name="seeders" value="{{ item.seeders }}">
+          <input type="hidden" name="discount" value="{{ item.discount or '' }}">
+          <input type="hidden" name="category" value="{{ item.category or '' }}">
+          <input type="hidden" name="publish_at" value="{{ item.created_at or '' }}">
+          <select name="subscription_id">
+            {% for sub in subscriptions %}
+            <option value="{{ sub.id }}">{{ sub.title }}（{{ '电影' if sub.kind == 'movie' else 'S%02d' | format(sub.season) }}）</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="primary">下载</button>
+        </form>
+        {% endif %}
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% elif not keyword %}
+<p class="hint">输入关键词开始搜索。建议直接搜索中文剧名。</p>
+{% endif %}
+{% endblock %}

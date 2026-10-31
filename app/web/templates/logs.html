@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}日志 · mtbox{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>事件日志</h1>
+  <div class="actions small">
+    <a class="button {% if not level %}primary{% endif %}" href="/logs">全部</a>
+    <a class="button {% if level == 'INFO' %}primary{% endif %}" href="/logs?level=INFO">INFO</a>
+    <a class="button {% if level == 'WARN' %}primary{% endif %}" href="/logs?level=WARN">WARN</a>
+    <a class="button {% if level == 'ERROR' %}primary{% endif %}" href="/logs?level=ERROR">ERROR</a>
+  </div>
+</div>
+
+{% if events %}
+<table class="checks">
+  <thead><tr><th>时间</th><th>级别</th><th>来源</th><th>内容</th><th>详情</th></tr></thead>
+  <tbody>
+    {% for event in events %}
+    <tr>
+      <td class="muted small nowrap">{{ event.created_at | localtime }}</td>
+      <td><span class="badge level-{{ event.level | lower }}">{{ event.level }}</span></td>
+      <td class="small">{{ event.source }}</td>
+      <td>{{ event.message }}</td>
+      <td class="muted small">
+        {% if event.payload %}
+        <details class="payload-box">
+          <summary>查看</summary>
+          <pre class="payload-full">{{ event.payload }}</pre>
+        </details>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="hint">暂无日志。</p>
+{% endif %}
+{% endblock %}

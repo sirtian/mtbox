@@ -1,0 +1,48 @@
+name: Feature request
+description: 提议新功能或行为改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先阅读 ROADMAP.md 与 docs/architecture.md。项目有意保持单用户、内网、
+        不依赖 TMDB 的范围。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景与问题
+      description: 你在什么情况下遇到什么困难？不要只描述解决方案。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 期望的行为、配置项或界面
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - 匹配 / 评分
+        - 下载 / 整理
+        - 调度 / 护栏
+        - 界面 / 设置
+        - 部署 / 文档
+        - 其他
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 该功能不涉及绕过站点风控、Cookie 登录自动化或多用户 SaaS
+          required: true

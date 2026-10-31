@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}豆瓣榜单 · mtbox{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>豆瓣榜单</h1>
+  <a class="button" href="{{ refresh_url }}">刷新</a>
+</div>
+<p class="hint">公开榜单，不需要豆瓣账号或 Cookie。点“订阅”会预填标题、年份和豆瓣 ID，保存后由系统自动匹配 M-Team。</p>
+
+<div class="tabbar">
+  {% for tab in kind_links %}
+  <a class="button {% if kind == tab.code %}primary{% endif %}" href="{{ tab.href }}">{{ tab.label }}</a>
+  {% endfor %}
+  <span class="tab-sep"></span>
+  {% for tab in sort_links %}
+  <a class="button {% if sort == tab.code %}primary{% endif %}" href="{{ tab.href }}">{{ tab.label }}</a>
+  {% endfor %}
+</div>
+
+<form class="filterbar" method="get" action="/douban">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <input type="hidden" name="sort" value="{{ sort }}">
+  <label>年份
+    <select name="year">
+      {% for option in year_options %}
+      <option value="{{ option }}" {% if option == (year or all_label) %}selected{% endif %}>{{ option if option != all_label else '全部年份' }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>类别
+    <select name="genre">
+      {% for option in genre_options %}
+      <option value="{{ option }}" {% if option == (genre or all_label) %}selected{% endif %}>{{ option if option != all_label else '全部类别' }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>每页
+    <select name="size" onchange="this.form.submit()">
+      {% for option in size_options %}
+      <option value="{{ option }}" {% if option == size %}selected{% endif %}>{{ option }} 条</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button class="button primary" type="submit">筛选</button>
+  {% if year or genre %}<a class="button" href="{{ clear_url }}">清除筛选</a>{% endif %}
+</form>
+
+{% if chart %}
+<p class="muted small">
+  {% if year or genre %}筛选：{{ year or '全部年份' }}{% if genre %} · {{ genre }}{% endif %} · {% endif %}
+  {% if chart.total %}共约 {{ chart.total }} 条 · {% endif %}
+  第 {{ page }}{% if total_pages %} / {{ total_pages }}{% endif %} 页 · 本页 {{ items | length }} 条
+  {% if chart.cached %}· 缓存{% endif %}
+  {% if chart.stale %}· 豆瓣暂时不可用，显示旧缓存{% endif %}
+  {% if fetched_display %}· 更新于 {{ fetched_display }}{% endif %}
+</p>
+{% endif %}
+
+{% if error %}
+<div class="flash flash-error">{{ error }}</div>
+{% endif %}
+
+{% if items %}
+<div class="douban-grid">
+  {% for row in items %}
+  {% set item = row.item %}
+  <article class="douban-card">
+    <div class="douban-poster">
+      {% if item.cover_url %}
+      <img src="{{ item.cover_url }}" alt="{{ item.title }}" loading="lazy" referrerpolicy="no-referrer">
+      {% else %}
+      <span class="muted small">暂无海报</span>
+      {% endif %}
+      <span class="douban-rank">#{{ item.rank }}</span>
+    </div>
+    <div class="douban-body">
+      <div class="douban-title" title="{{ item.title }}">{{ item.title }}</div>
+      <div class="muted small">
+        {% if item.year %}{{ item.year }} · {% endif %}
+        {% if item.rating is not none %}
+          <span class="ok-text">{{ '%.1f' | format(item.rating) }}</span>
+          {% if item.rating_count %}（{{ item.rating_count }}人）{% endif %}
+        {% else %}
+          暂无评分
+        {% endif %}
+      </div>
+      {% if item.episodes_info %}<div class="small">{{ item.episodes_info }}</div>{% endif %}
+      {% if item.subtitle %}<div class="muted small douban-sub">{{ item.subtitle }}</div>{% endif %}
+      <div class="douban-actions">
+        <a class="button primary" href="{{ row.prefill_url }}">订阅</a>
+        <a class="button" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">豆瓣</a>
+      </div>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% elif not error %}
+{% if year or genre %}
+<p class="hint">当前筛选下没有条目，试试放宽年份或类别，或点“清除筛选”。</p>
+{% elif page > 1 %}
+<p class="hint">这一页没有更多条目了，点“上一页”返回，或用页码跳转调整。</p>
+{% else %}
+<p class="hint">这个榜单暂时没有返回条目，稍后点“刷新”再试。</p>
+{% endif %}
+{% endif %}
+
+{% if has_prev or has_next or total_pages > 1 %}
+<div class="pager">
+  {% if has_prev %}
+  <a class="button" href="{{ prev_url }}">上一页</a>
+  {% else %}
+  <span class="button disabled">上一页</span>
+  {% endif %}
+  <span class="muted small">第 {{ page }}{% if total_pages %} / {{ total_pages }}{% endif %} 页</span>
+  {% if has_next %}
+  <a class="button" href="{{ next_url }}">下一页</a>
+  {% else %}
+  <span class="button disabled">下一页</span>
+  {% endif %}
+  <form class="page-jump" method="get" action="/douban">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    {% if year %}<input type="hidden" name="year" value="{{ year }}">{% endif %}
+    {% if genre %}<input type="hidden" name="genre" value="{{ genre }}">{% endif %}
+    <input type="hidden" name="size" value="{{ size }}">
+    <label class="muted small" for="page-jump-input">跳到第</label>
+    <input id="page-jump-input" type="number" name="page" min="1"
+           {% if total_pages %}max="{{ total_pages }}"{% endif %}
+           value="{{ page }}" inputmode="numeric">
+    <span class="muted small">页</span>
+    <button class="button" type="submit">跳转</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

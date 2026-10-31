@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 · mtbox{% endblock %}
+{% block content %}
+{% set level_labels = {'ok': '正常', 'info': '提示', 'warn': '警告', 'error': '错误'} %}
+<h1>仪表盘</h1>
+
+<section class="cards cards-5">
+  <div class="card"><span class="label">订阅</span><strong>{{ counts.subscriptions }}</strong></div>
+  <div class="card"><span class="label">候选</span><strong>{{ counts.candidates }}</strong></div>
+  <div class="card"><span class="label">下载中</span><strong>{{ counts.downloading }}</strong></div>
+  <div class="card"><span class="label">待整理</span><strong>{{ counts.to_organize }}</strong></div>
+  <div class="card"><span class="label">24h 错误</span><strong>{{ counts.errors_24h }}</strong></div>
+  <div class="card"><span class="label">搜索预算（24h）</span><strong>{{ usage.search }} / {{ budgets.search }}</strong></div>
+  <div class="card"><span class="label">取种预算（24h）</span><strong>{{ usage.torrent }} / {{ budgets.torrent }}</strong></div>
+  <div class="card">
+    <span class="label">分享率护栏</span>
+    <strong>
+      <span class="badge {% if guard.mode == 'paused' %}level-error{% elif guard.mode == 'free_only' %}level-warn{% else %}badge-free{% endif %}">{{ guard_label }}</span>
+    </strong>
+    <span class="muted small">{{ guard.ratio if guard.ratio is not none else '未采集' }}</span>
+  </div>
+  <div class="card">
+    <span class="label">媒体库磁盘</span>
+    <strong>{% if disk %}{{ disk.percent }}%{% else %}—{% endif %}</strong>
+    <span class="muted small">{% if disk %}剩余 {{ disk.free_gb }} / {{ disk.total_gb }} GB{% else %}无法读取{% endif %}</span>
+  </div>
+</section>
+
+{% if snapshot %}
+<section>
+  <h2>账号快照</h2>
+  <div class="cards cards-5">
+    <div class="card"><span class="label">分享率</span><strong>{{ snapshot.ratio if snapshot.ratio is not none else '—' }}</strong></div>
+    <div class="card"><span class="label">上传</span><strong>{{ snapshot.uploaded | filesize }}</strong></div>
+    <div class="card"><span class="label">下载</span><strong>{{ snapshot.downloaded | filesize }}</strong></div>
+    <div class="card"><span class="label">魔力</span><strong>{{ snapshot.bonus if snapshot.bonus is not none else '—' }}</strong></div>
+  </div>
+  <p class="hint">采集于 {{ snapshot.captured_at | localtime }}</p>
+</section>
+{% endif %}
+
+<section>
+  <h2>定时任务</h2>
+  {% if scheduler_running %}
+  <table class="checks">
+    <thead><tr><th>任务</th><th>上次运行</th><th>结果</th><th>下次运行</th></tr></thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.name }}</td>
+        <td class="muted small">{{ job.last_started_at | localtime or '—' }}</td>
+        <td>
+          {% if job.ok is none %}<span class="muted">未运行</span>
+          {% elif job.ok %}<span class="ok-text">成功</span>
+          {% else %}<span class="error-text">{{ job.error or '失败' }}</span>{% endif %}
+        </td>
+        <td class="muted small">{{ job.next_run_at | localtime or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">调度器未启用（SCHEDULER_ENABLED=false），只能手动刷新与检查。</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>启动自检</h2>
+  <table class="checks">
+    <thead><tr><th>检查项</th><th>状态</th><th>说明</th></tr></thead>
+    <tbody>
+      {% for check in checks %}
+      <tr class="level-{{ check.level }}">
+        <td>{{ check.name }}</td>
+        <td><span class="badge level-{{ check.level }}">{{ level_labels.get(check.level, check.level) }}</span></td>
+        <td>{{ check.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if errors %}
+<section>
+  <h2>最近错误</h2>
+  <table class="checks">
+    <thead><tr><th>时间</th><th>级别</th><th>来源</th><th>内容</th></tr></thead>
+    <tbody>
+      {% for event in errors %}
+      <tr>
+        <td class="muted">{{ event.created_at | localtime }}</td>
+        <td><span class="badge level-{{ event.level | lower }}">{{ level_labels.get(event.level | lower, event.level) }}</span></td>
+        <td>{{ event.source }}</td>
+        <td>{{ event.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section>
+  <h2>最近事件</h2>
+  {% if events %}
+  <table class="checks">
+    <thead><tr><th>时间</th><th>级别</th><th>来源</th><th>内容</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td class="muted">{{ event.created_at | localtime }}</td>
+        <td><span class="badge level-{{ event.level | lower }}">{{ level_labels.get(event.level | lower, event.level) }}</span></td>
+        <td>{{ event.source }}</td>
+        <td>{{ event.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">暂无事件。</p>
+  {% endif %}
+</section>
+
+<p class="hint">自动检查按订阅的间隔运行；分享率护栏、磁盘水位与保种清理均在定时任务中执行。</p>
+{% endblock %}

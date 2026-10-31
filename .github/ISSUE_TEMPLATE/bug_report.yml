@@ -1,0 +1,68 @@
+name: Bug report
+description: 报告可复现的问题（请先脱敏）
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**请勿粘贴 API Key、密码、Cookie、完整 `.env`、数据库或未脱敏日志。**
+        安全问题请按 SECURITY.md 私下报告，不要开公开 issue。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 运行 `mtbox --version` 的输出
+      placeholder: "mtbox 0.5.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 部署方式
+      options:
+        - Docker / Compose
+        - 本地 Python
+        - 其他（请在描述中说明）
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: 平台
+      description: 系统、CPU 架构、Python 或镜像标签
+      placeholder: "极空间 Z4S / aarch64 / mtbox:0.5.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 实际发生了什么，期望是什么
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志 / 自检结果
+      description: 请先掩码敏感值。不要粘贴完整 `.env` 或数据库。
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已移除 API Key、密码、Cookie、数据库等敏感信息
+          required: true
+        - label: 我已搜索现有 issue，未发现重复
+          required: true
