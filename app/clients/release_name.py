@@ -21,6 +21,8 @@ VIDEO_EXTENSIONS = {
     ".mp4",
     ".ts",
     ".m2ts",
+    ".mts",
+    ".m2t",
     ".avi",
     ".mov",
     ".wmv",
@@ -28,6 +30,16 @@ VIDEO_EXTENSIONS = {
     ".m4v",
     ".mpg",
     ".mpeg",
+    ".rmvb",
+    ".rm",
+    ".flv",
+    ".f4v",
+    ".asf",
+    ".vob",
+    ".3gp",
+    ".ogv",
+    ".divx",
+    ".mxf",
 }
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 

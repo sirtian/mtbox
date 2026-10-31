@@ -532,6 +532,218 @@ def test_reorganize_moves_links_to_the_new_category(tmp_path: Path) -> None:
     assert [Path(path) for path in json.loads(raw)] == [new]
 
 
+def test_ebook_torrent_is_organized_under_inferred_category(tmp_path: Path) -> None:
+    pack = "Queen's Sing & Read Raz"
+    settings, db, _, torrent_id = movie_setup(
+        tmp_path,
+        files=[
+            {"path": f"{pack}/book.pdf", "size": 3},
+            {"path": f"{pack}/read.epub", "size": 4},
+        ],
+    )
+    write_source(settings, f"{pack}/book.pdf", b"pdf")
+    write_source(settings, f"{pack}/read.epub", b"epub")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    base = settings.library_dir / "电子书" / "示例电影"
+    assert (base / "book.pdf").read_bytes() == b"pdf"
+    assert (base / "read.epub").read_bytes() == b"epub"
+    assert not (settings.library_dir / "Movies").exists()
+    with db.read() as conn:
+        assert conn.execute(
+            "SELECT state FROM torrent WHERE id = ?", (torrent_id,)
+        ).fetchone()[0] == "organized"
+
+
+def test_ebook_uses_explicit_category_and_keeps_nested_layout(tmp_path: Path) -> None:
+    settings, db, _, torrent_id = movie_setup(
+        tmp_path,
+        library_category="电子书",
+        files=[
+            {"path": "Pack/Series/vol1.epub", "size": 3},
+            {"path": "Pack/Series/vol2.epub", "size": 4},
+            {"path": "Pack/.DS_Store", "size": 1},
+            {"path": "Pack/__MACOSX/._vol1.epub", "size": 1},
+        ],
+    )
+    write_source(settings, "Pack/Series/vol1.epub", b"one")
+    write_source(settings, "Pack/Series/vol2.epub", b"two")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    base = settings.library_dir / "电子书" / "示例电影"
+    assert (base / "Series" / "vol1.epub").read_bytes() == b"one"
+    assert (base / "Series" / "vol2.epub").read_bytes() == b"two"
+    assert not (base / ".DS_Store").exists()
+    assert not (base / "__MACOSX").exists()
+
+
+@pytest.mark.parametrize(
+    ("name", "category"),
+    [
+        ("track01.flac", "音乐"),
+        ("cover.jpg", "图片"),
+        ("release.bin", "其他"),
+    ],
+)
+def test_document_category_is_inferred_from_file_type(
+    tmp_path: Path, name: str, category: str
+) -> None:
+    settings, db, _, torrent_id = movie_setup(
+        tmp_path, files=[{"path": name, "size": 3}]
+    )
+    write_source(settings, name, b"doc")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    assert (settings.library_dir / category / "示例电影" / name).read_bytes() == b"doc"
+
+
+def test_document_torrent_with_only_junk_files_fails(tmp_path: Path) -> None:
+    settings, db, _, torrent_id = movie_setup(
+        tmp_path,
+        files=[
+            {"path": ".DS_Store", "size": 1},
+            {"path": "__MACOSX/._book.epub", "size": 1},
+        ],
+    )
+    write_source(settings, ".DS_Store", b"junk")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert not result.ok
+    assert "没有可整理的文件" in result.message
+    assert not settings.library_dir.exists() or not any(settings.library_dir.rglob("*"))
+
+
+def test_small_movie_still_uses_video_template(tmp_path: Path) -> None:
+    settings, db, _, torrent_id = movie_setup(
+        tmp_path, files=[{"path": MOVIE_FILE, "size": 1024}]
+    )
+    settings.min_video_size_mb = 1  # 1024 bytes is below 1 MiB
+    write_source(settings, MOVIE_FILE, b"tiny")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    target = (
+        settings.library_dir
+        / "Movies"
+        / "示例电影 (2025)"
+        / "示例电影 (2025) - 1080p.mp4"
+    )
+    assert target.read_bytes() == b"tiny"
+
+
+def test_small_videos_with_episodes_still_use_video_template(tmp_path: Path) -> None:
+    rel = "Pack/Kids.S01E01.mp4"
+    settings, db, _, torrent_id = setup(
+        tmp_path, files=[{"path": rel, "size": 1024}]
+    )
+    settings.min_video_size_mb = 1
+    write_source(settings, rel, b"clip")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    target = (
+        settings.library_dir
+        / "TV"
+        / "示例剧 (2025)"
+        / "Season 01"
+        / "示例剧 - S01E01.mp4"
+    )
+    assert target.read_bytes() == b"clip"
+
+
+def test_small_clip_pack_falls_back_to_pack_layout(tmp_path: Path) -> None:
+    settings, db, _, torrent_id = setup(
+        tmp_path,
+        episode_from=None,
+        episode_to=None,
+        episode_start=None,
+        files=[
+            {"path": "Pack/clip-a.mp4", "size": 1024},
+            {"path": "Pack/clip-b.mp4", "size": 1024},
+        ],
+    )
+    settings.min_video_size_mb = 1
+    write_source(settings, "Pack/clip-a.mp4", b"aaa")
+    write_source(settings, "Pack/clip-b.mp4", b"bbb")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    base = settings.library_dir / "视频" / "示例剧"
+    assert (base / "clip-a.mp4").read_bytes() == b"aaa"
+    assert (base / "clip-b.mp4").read_bytes() == b"bbb"
+
+
+def test_mixed_pack_uses_explicit_category(tmp_path: Path) -> None:
+    settings, db, _, torrent_id = setup(
+        tmp_path,
+        episode_from=None,
+        episode_to=None,
+        episode_start=None,
+        library_category="动漫",
+        files=[
+            {"path": "Pack/clip-a.mp4", "size": 1024},
+            {"path": "Pack/book.pdf", "size": 1024},
+        ],
+    )
+    settings.min_video_size_mb = 1
+    write_source(settings, "Pack/clip-a.mp4", b"clip")
+    write_source(settings, "Pack/book.pdf", b"pdf")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    base = settings.library_dir / "动漫" / "示例剧"
+    assert (base / "clip-a.mp4").read_bytes() == b"clip"
+    assert (base / "book.pdf").read_bytes() == b"pdf"
+
+
+def test_archive_only_torrent_is_organized_as_pack(tmp_path: Path) -> None:
+    settings, db, _, torrent_id = movie_setup(
+        tmp_path, files=[{"path": "Pack/release.rar", "size": 1024}]
+    )
+    write_source(settings, "Pack/release.rar", b"rar")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    assert (settings.library_dir / "其他" / "示例电影" / "release.rar").read_bytes() == b"rar"
+
+
+def test_mixed_video_and_documents_still_uses_video_template(tmp_path: Path) -> None:
+    settings, db, _, torrent_id = setup(
+        tmp_path,
+        files=[
+            {"path": f"{NAME}/{NAME}.mkv", "size": 1024},
+            {"path": f"{NAME}/readme.pdf", "size": 3},
+        ],
+    )
+    write_source(settings, f"{NAME}/{NAME}.mkv")
+    write_source(settings, f"{NAME}/readme.pdf", b"pdf")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    target = (
+        settings.library_dir
+        / "TV"
+        / "示例剧 (2025)"
+        / "Season 01"
+        / "示例剧 - S01E01.mkv"
+    )
+    assert target.is_file()
+    assert not (settings.library_dir / "电子书").exists()
+
+
 def test_dry_run_does_not_link(tmp_path: Path) -> None:
     settings, db, _, torrent_id = setup(tmp_path, )
     settings.dry_run = True

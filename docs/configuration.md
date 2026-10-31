@@ -19,11 +19,18 @@ mtbox 的配置分三层：
 | `MT_API_KEY` | 空 | 存取令牌。控制台 → 实验室 → 存取令牌。也可在设置页保存。**必填**。 |
 | `MT_API_BASE` | `https://api.m-team.cc/api` | Official Open API 根地址。 |
 | `MT_USER_AGENT` | 浏览器 UA | 降低 Cloudflare 1010 概率；一般无需修改。 |
-| `MT_SEARCH_MIN_INTERVAL_SEC` | `20` | 两次搜索之间的最小间隔。 |
+| `MT_SEARCH_MIN_INTERVAL_SEC` | `0` | 两次搜索之间的最小间隔（秒）；`0` 为不限速。设置页的「搜索最小间隔」保存后覆盖此项。 |
 | `MT_SEARCH_DAILY_BUDGET` | `400` | 24h 搜索预算。设置页的「24h 搜索预算」保存后覆盖此项。 |
 | `MT_DOWNLOAD_DAILY_BUDGET` | `60` | 24h 取种（`genDlToken`）预算。 |
 | `MT_PROFILE_DAILY_BUDGET` | `200` | 24h 账号资料刷新预算（分享率护栏使用）。 |
 | `MT_TIMEOUT_SEC` | `30` | M-Team 请求超时（秒）。 |
+
+搜索页的分类、子分类和排序使用 M-Team 官方 `categories` / `sortField` /
+`sortDirection` 参数，分类 ID 与排序枚举已在代码中校验。分类树与排序选项说明见
+[使用指南 · 搜索页](usage.md#4-搜索页手动抓取)。
+
+搜索最小间隔默认 `0`（不限速），只受 24h 预算约束；如果账号对频率较敏感，
+可在设置页把「搜索最小间隔」调为 20 秒或更高。
 
 ### 豆瓣榜单
 
@@ -32,7 +39,9 @@ mtbox 的配置分三层：
 | `DOUBAN_TIMEOUT_SEC` | `15` | 公开榜单请求超时。 |
 | `DOUBAN_CACHE_SEC` | `600` | 榜单缓存秒数。 |
 
-豆瓣榜单只读取公开页面，不需要账号或 Cookie；访问失败只影响榜单页。
+豆瓣榜单只读取公开页面，不需要账号或 Cookie；访问失败只影响榜单页。榜单海报由
+`/douban/cover` 代理加载：服务端带豆瓣 Referer 取图，仅允许官方图床
+`img*.doubanio.com/view/photo/` 的 HTTPS 图片，不开放任意 URL 代理。
 
 ### qBittorrent
 
@@ -118,6 +127,7 @@ PATH_MAP_JSON=[["/downloads","/vol1/downloads"]]
 | `category_map` | `{}` | 关键词/分类映射；`{}` 表示不校准，按搜索类型处理。 |
 | `notify_config` | `{}` | 通知配置，见[使用指南](usage.md#通知)。 |
 | `search_daily_budget` | 未写入 | 24h 搜索预算覆盖值。留空保存会删除该键并回退到 `MT_SEARCH_DAILY_BUDGET`。 |
+| `search_min_interval_sec` | 未写入 | 搜索最小间隔覆盖值（秒，`0` 为不限）。留空保存会删除该键并回退到 `MT_SEARCH_MIN_INTERVAL_SEC`。 |
 
 模板占位符：`{library}`、`{category}`、`{title}`、`{original_title}`、`{year}`、
 `{season}`、`{episode}`、`{episode_end}`、`{resolution}`、`{video_codec}`、`{ext}`、`{group}`。

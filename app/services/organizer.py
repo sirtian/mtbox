@@ -34,6 +34,63 @@ EXCLUDED_WORDS = ("sample", "extras", "featurette", "behind", "trailer", "previe
 INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 MAX_SEGMENT_BYTES = 180
 
+# Non-video downloads (ebooks, audio, image/comic packs) cannot use the video
+# naming templates, so they are organized by category instead.
+EBOOK_EXTENSIONS = {
+    ".pdf",
+    ".epub",
+    ".mobi",
+    ".azw",
+    ".azw3",
+    ".djvu",
+    ".djv",
+    ".cbz",
+    ".cbr",
+    ".cb7",
+    ".cbt",
+    ".fb2",
+    ".txt",
+    ".md",
+    ".doc",
+    ".docx",
+    ".rtf",
+    ".chm",
+    ".html",
+    ".htm",
+    ".xps",
+}
+AUDIO_EXTENSIONS = {
+    ".mp3",
+    ".m4a",
+    ".m4b",
+    ".flac",
+    ".wav",
+    ".aac",
+    ".ogg",
+    ".opus",
+    ".wma",
+    ".ape",
+    ".alac",
+    ".aiff",
+    ".dsf",
+    ".dff",
+}
+IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".heic",
+    ".avif",
+    ".svg",
+}
+JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
+JUNK_DIRS = {"__macosx", ".spotlight-v100", ".trashes", ".fseventsd"}
+
 
 @dataclass(frozen=True, slots=True)
 class OrganizeResult:
@@ -136,10 +193,16 @@ class Organizer:
         source_dir = self._source_dir(torrent, rels)
 
         # The recorded list can be stale (qB may hold a different release, or the
-        # user replaced the files).  When no recorded video exists on disk, trust
-        # what qBittorrent actually has for this torrent instead of failing.
+        # user replaced the files).  When the recorded files cannot be found on
+        # disk, trust what qBittorrent actually has for this torrent instead of
+        # failing.  Document-only torrents have no video entry, so they count as
+        # present as long as their recorded files exist.
         recorded_videos = [rel for rel in rels if is_video(rel)]
-        if not any(self._entry_exists(source_dir, rel) for rel in recorded_videos):
+        recorded_present = any(self._entry_exists(source_dir, rel) for rel in rels)
+        stale_videos = bool(recorded_videos) and not any(
+            self._entry_exists(source_dir, rel) for rel in recorded_videos
+        )
+        if stale_videos or (not recorded_videos and not recorded_present):
             actual = self._actual_content(torrent)
             if actual is not None:
                 log_event(
@@ -152,7 +215,10 @@ class Organizer:
                 source_dir, entries = actual
 
         videos: list[tuple[str, int]] = []
+        small_videos: list[tuple[str, int]] = []
         subtitles: list[str] = []
+        documents: list[str] = []
+        min_size = self.settings.min_video_size_mb * 1024 * 1024
         for entry in entries:
             rel = self._safe_relative(str(entry["path"]))
             size = int(entry.get("size") or 0)
@@ -164,73 +230,103 @@ class Organizer:
                         size = (source_dir / rel).stat().st_size
                     except OSError:
                         size = 0
-                if size < self.settings.min_video_size_mb * 1024 * 1024:
-                    continue
-                videos.append((rel, size))
+                if size < min_size:
+                    small_videos.append((rel, size))
+                else:
+                    videos.append((rel, size))
             elif is_subtitle(rel):
                 subtitles.append(rel)
-        if not videos:
-            raise ValueError("没有可整理的视频文件")
-
-        if sub.kind == "movie":
-            rel, _ = max(videos, key=lambda item: item[1])
-            mappings = {rel: []}
-        else:
-            mappings = self._resolve_episodes(sub, torrent, [rel for rel, _ in videos])
-
-        mappings = self._drop_duplicate_episodes(mappings, dict(videos))
+            elif not self._junk(rel):
+                documents.append(rel)
 
         library = self.settings.library_dir.resolve()
         library.mkdir(parents=True, exist_ok=True)
-        template = settings_store.get_value(
-            self.db,
-            "movie_path_template" if sub.kind == "movie" else "tv_path_template",
-        ) or ""
-        if not template:
-            raise ValueError("未配置命名模板")
 
         linked = 0
         organized_episodes: list[tuple[int, int]] = []
         targets: list[Path] = []
         legacy_targets: list[Path] = []
-        for rel, size in videos:
-            episodes = mappings.get(rel)
-            if episodes is None:
-                continue
-            if sub.kind == "tv" and not episodes:
-                raise ValueError(f"无法确定集数: {rel}")
-            if sub.kind == "tv" and not relocate and self._all_organized(sub, torrent, episodes):
-                continue
+        if not videos:
+            # No video passed the size filter.  Short clips (kids/animation
+            # packs) and episode-less releases can still use the normal flow,
+            # so try it before falling back to a plain pack layout.
+            usable = self._size_filtered_usable(sub, torrent, small_videos)
+            if usable:
+                log_event(
+                    self.db,
+                    "WARN",
+                    "organizer",
+                    "视频文件均小于最小体积，仍按视频流程整理",
+                    {"torrent_id": torrent.id},
+                )
+                videos = usable
+            else:
+                # Ebooks, archives and mixed packs have no video to name after,
+                # so keep their own layout under the media category.
+                pack_files = documents + subtitles + [rel for rel, _ in small_videos]
+                if not pack_files:
+                    raise ValueError("任务没有可整理的文件")
+                targets = self._organize_documents(
+                    torrent, sub, source_dir, pack_files, created
+                )
+                linked = len(targets)
 
-            src = self._locate_source(source_dir, rel)
-            self._ensure_within(src, source_dir)
+        if not targets:
+            if not videos:
+                raise ValueError("任务没有可整理的文件")
+            if sub.kind == "movie":
+                rel, _ = max(videos, key=lambda item: item[1])
+                mappings = {rel: []}
+            else:
+                mappings = self._resolve_episodes(sub, torrent, [rel for rel, _ in videos])
 
-            parsed = parse_release(Path(rel).name)
-            episode_start = episodes[0] if episodes else None
-            contiguous = episodes == list(range(episodes[0], episodes[-1] + 1)) if episodes else False
-            episode_end = episodes[-1] if contiguous and len(episodes) > 1 else None
-            values = self._template_values(
-                sub, torrent, parsed, episode_start, episode_end, rel
-            )
-            values["library"] = str(library)
-            target = self._render_target(template, values, library)
-            target, legacy = self._apply_category_dir(target, library, sub, template)
-            if sub.kind == "tv" and episode_end is not None:
-                target = self._apply_episode_range(target, episode_start, episode_end)
+            mappings = self._drop_duplicate_episodes(mappings, dict(videos))
+
+            template = settings_store.get_value(
+                self.db,
+                "movie_path_template" if sub.kind == "movie" else "tv_path_template",
+            ) or ""
+            if not template:
+                raise ValueError("未配置命名模板")
+
+            for rel, size in videos:
+                episodes = mappings.get(rel)
+                if episodes is None:
+                    continue
+                if sub.kind == "tv" and not episodes:
+                    raise ValueError(f"无法确定集数: {rel}")
+                if sub.kind == "tv" and not relocate and self._all_organized(sub, torrent, episodes):
+                    continue
+
+                src = self._locate_source(source_dir, rel)
+                self._ensure_within(src, source_dir)
+
+                parsed = parse_release(Path(rel).name)
+                episode_start = episodes[0] if episodes else None
+                contiguous = episodes == list(range(episodes[0], episodes[-1] + 1)) if episodes else False
+                episode_end = episodes[-1] if contiguous and len(episodes) > 1 else None
+                values = self._template_values(
+                    sub, torrent, parsed, episode_start, episode_end, rel
+                )
+                values["library"] = str(library)
+                target = self._render_target(template, values, library)
+                target, legacy = self._apply_category_dir(target, library, sub, template)
+                if sub.kind == "tv" and episode_end is not None:
+                    target = self._apply_episode_range(target, episode_start, episode_end)
+                    if legacy is not None:
+                        legacy = self._apply_episode_range(legacy, episode_start, episode_end)
+
+                target = self._link(src, target, created)
+                linked += 1
+                targets.append(target)
                 if legacy is not None:
-                    legacy = self._apply_episode_range(legacy, episode_start, episode_end)
-
-            target = self._link(src, target, created)
-            linked += 1
-            targets.append(target)
-            if legacy is not None:
-                legacy_targets.append(legacy)
-            self._link_subtitles(
-                source_dir, src, target, subtitles, created, targets, legacy_targets, legacy
-            )
-            if sub.kind == "tv":
-                season = torrent.season if torrent.season is not None else sub.season
-                organized_episodes.extend((season, episode) for episode in episodes)
+                    legacy_targets.append(legacy)
+                self._link_subtitles(
+                    source_dir, src, target, subtitles, created, targets, legacy_targets, legacy
+                )
+                if sub.kind == "tv":
+                    season = torrent.season if torrent.season is not None else sub.season
+                    organized_episodes.extend((season, episode) for episode in episodes)
 
         self._remove_stale_links(torrent, targets, legacy_targets if relocate else [])
 
@@ -444,6 +540,14 @@ class Organizer:
         lowered = path.lower()
         return any(word in lowered for word in EXCLUDED_WORDS)
 
+    @staticmethod
+    def _junk(path: str) -> bool:
+        parts = [part.lower() for part in Path(path).parts]
+        if any(part in JUNK_DIRS for part in parts[:-1]):
+            return True
+        name = parts[-1] if parts else ""
+        return name in JUNK_NAMES or name.startswith("._")
+
     def _link(self, src: Path, target: Path, created: list[Path]) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
@@ -547,6 +651,68 @@ class Organizer:
             targets.append(sub_target)
             if legacy is not None:
                 legacy_targets.append(legacy.with_name(sub_target.name))
+
+    def _size_filtered_usable(
+        self,
+        sub: Subscription,
+        torrent: Torrent,
+        small_videos: list[tuple[str, int]],
+    ) -> list[tuple[str, int]]:
+        """Videos below ``MIN_VIDEO_SIZE_MB`` that the naming flow can still place.
+
+        A movie, or a series whose episodes all parse, is safe to organize with
+        the normal templates.  A pack of unrelated clips is not, so it keeps
+        the plain layout instead of failing on episode resolution.
+        """
+        if not small_videos:
+            return []
+        if sub.kind == "movie":
+            return small_videos
+        try:
+            self._resolve_episodes(sub, torrent, [rel for rel, _ in small_videos])
+        except ValueError:
+            return []
+        return small_videos
+
+    def _organize_documents(
+        self,
+        torrent: Torrent,
+        sub: Subscription,
+        source_dir: Path,
+        documents: list[str],
+        created: list[Path],
+    ) -> list[Path]:
+        """Hardlink a non-video torrent under its media category.
+
+        Ebooks, audiobooks and image packs have no episode or resolution to
+        name after, so the torrent's own layout is kept:
+
+        ``<library>/<category>/<title>/<relative path>``
+
+        The category comes from the subscription when set, otherwise it is
+        inferred from the file types (电子书 / 音乐 / 图片 / 其他).
+        """
+        library = self.settings.library_dir.resolve()
+        category = sub.library_category or _document_category(documents)
+        title = sub.title or sub.original_title or torrent.title
+        base = library / self._safe_segment(category) / self._safe_segment(title)
+        self._ensure_within(base, library)
+
+        parts_list = [Path(rel).parts for rel in documents]
+        roots = {parts[0] for parts in parts_list if len(parts) > 1}
+        strip_root = len(roots) == 1 and all(len(parts) > 1 for parts in parts_list)
+
+        targets: list[Path] = []
+        for rel, parts in zip(documents, parts_list):
+            src = self._locate_source(source_dir, rel)
+            self._ensure_within(src, source_dir)
+            if strip_root:
+                parts = parts[1:]
+            safe_parts = [self._safe_segment(part) for part in parts]
+            target = base.joinpath(*safe_parts)
+            self._ensure_within(target, base)
+            targets.append(self._link(src, target, created))
+        return targets
 
     # ---------- episodes / naming ----------
 
@@ -760,6 +926,20 @@ def is_video(path: str) -> bool:
 
 def is_subtitle(path: str) -> bool:
     return Path(path).suffix.lower() in SUBTITLE_EXTENSIONS
+
+
+def _document_category(paths: list[str]) -> str:
+    """Best-effort media category for a torrent organized as a plain pack."""
+    suffixes = {Path(path).suffix.lower() for path in paths}
+    if suffixes & EBOOK_EXTENSIONS:
+        return "电子书"
+    if suffixes & AUDIO_EXTENSIONS:
+        return "音乐"
+    if suffixes & IMAGE_EXTENSIONS:
+        return "图片"
+    if suffixes & VIDEO_EXTENSIONS:
+        return "视频"
+    return "其他"
 
 
 def _natural_key(value: str) -> list[object]:

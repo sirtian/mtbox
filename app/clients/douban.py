@@ -9,10 +9,12 @@ fields is kept, and every text field is length-limited.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -55,6 +57,48 @@ _MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 )
+
+# Douban's image CDN rejects requests without a douban.com Referer (418/403),
+# so the browser cannot load poster URLs directly.  The UI asks the app for
+# /douban/cover and this client fetches the image with the required header.
+# Only the official CDN hosts and poster path shape are accepted: the URL
+# comes from an untrusted upstream payload and must never become an open proxy.
+_COVER_HOSTS = frozenset(
+    {f"img{n}.doubanio.com" for n in range(1, 10)} | {"img.doubanio.com"}
+)
+_COVER_PATH = re.compile(
+    r"^/view/photo/[A-Za-z0-9_./-]+\.(?:jpg|jpeg|png|webp)$"
+)
+_COVER_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+_COVER_MAX_BYTES = 2 * 1024 * 1024
+_COVER_CACHE_TTL = 6 * 3600
+_COVER_CACHE_MAX_ITEMS = 256
+_COVER_CACHE_MAX_BYTES = 32 * 1024 * 1024
+
+
+def normalize_cover_url(value: Any) -> str | None:
+    """Return a safe Douban CDN poster URL, or ``None``.
+
+    The chart payload is untrusted.  Reject anything that is not an HTTPS
+    poster on a known Douban image host, with no credentials, query or
+    fragment that could redirect the proxy elsewhere.
+    """
+    if not isinstance(value, str) or not value or len(value) > 500:
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or parts.netloc.lower() not in _COVER_HOSTS:
+        return None
+    if parts.query or parts.fragment or parts.username or parts.password:
+        return None
+    if not _COVER_PATH.fullmatch(parts.path):
+        return None
+    segments = parts.path.lstrip("/").split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        return None
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,9 +212,9 @@ def _cover(raw: Any) -> str | None:
     if not isinstance(raw, dict):
         return None
     for key in ("normal", "large"):
-        value = raw.get(key)
-        if isinstance(value, str) and value.startswith(("https://", "http://")):
-            return value[:500]
+        value = normalize_cover_url(raw.get(key))
+        if value:
+            return value
     return None
 
 
@@ -199,6 +243,9 @@ class DoubanClient:
         )
         self._cache: dict[tuple[str, str, int, int, str], tuple[float, DoubanChart]] = {}
         self._episode_cache: dict[str, tuple[float, DoubanEpisodes]] = {}
+        self._cover_cache: dict[str, tuple[float, bytes, str]] = {}
+        self._cover_cache_bytes = 0
+        self._cover_lock = threading.Lock()
 
     def close(self) -> None:
         if self._owns_client:
@@ -276,6 +323,72 @@ class DoubanClient:
         if self.cache_sec:
             self._episode_cache[sid] = (now, episodes)
         return episodes
+
+    def fetch_cover(self, url: str) -> tuple[bytes, str]:
+        """Fetch a poster through the required Douban Referer.
+
+        Returns ``(image_bytes, media_type)``.  Responses are capped at 2 MiB
+        and cached in memory for a few hours; the browser also caches them for
+        a day.  Invalid URLs are rejected before any network request.
+        """
+        normalized = normalize_cover_url(url)
+        if normalized is None:
+            raise DoubanError("无效的豆瓣海报地址")
+        now = time.monotonic()
+        with self._cover_lock:
+            cached = self._cover_cache.get(normalized)
+            if cached and now - cached[0] < _COVER_CACHE_TTL:
+                return cached[1], cached[2]
+
+        try:
+            with self._client.stream(
+                "GET",
+                normalized,
+                headers={
+                    "Accept": "image/webp,image/png,image/jpeg;q=0.9,*/*;q=0.8",
+                    "Referer": "https://m.douban.com/",
+                    "User-Agent": _MOBILE_UA,
+                },
+                follow_redirects=False,
+                timeout=min(self.timeout_sec, 10.0),
+            ) as response:
+                if response.status_code != 200:
+                    raise DoubanError(
+                        f"豆瓣海报读取失败: HTTP {response.status_code}"
+                    )
+                media_type = (
+                    response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                if media_type not in _COVER_TYPES:
+                    raise DoubanError("豆瓣海报返回了非图片内容")
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body.extend(chunk)
+                    if len(body) > _COVER_MAX_BYTES:
+                        raise DoubanError("豆瓣海报文件过大")
+        except httpx.HTTPError as exc:
+            raise DoubanError(f"豆瓣海报读取失败: {exc}") from exc
+
+        data = bytes(body)
+        if not data:
+            raise DoubanError("豆瓣海报为空")
+        with self._cover_lock:
+            previous = self._cover_cache.pop(normalized, None)
+            if previous:
+                self._cover_cache_bytes -= len(previous[1])
+            self._cover_cache[normalized] = (now, data, media_type)
+            self._cover_cache_bytes += len(data)
+            while (
+                len(self._cover_cache) > _COVER_CACHE_MAX_ITEMS
+                or self._cover_cache_bytes > _COVER_CACHE_MAX_BYTES
+            ):
+                oldest = next(iter(self._cover_cache))
+                _, evicted, _ = self._cover_cache.pop(oldest)
+                self._cover_cache_bytes -= len(evicted)
+        return data, media_type
 
     # The recommend endpoint silently caps a single response at 50 entries.
     _RECOMMEND_CHUNK = 50

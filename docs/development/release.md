@@ -83,7 +83,7 @@ docker run --rm --workdir / --entrypoint python mtbox:<version> \
 
 ## 6. 校验值
 
-`images/SHA256SUMS` 使用 GNU coreutils 格式，**LF 换行**，双空格 + `*`：
+`images/SHA256SUMS` 使用 GNU coreutils 二进制模式格式，**LF 换行**，单空格 + `*`：
 
 ```text
 <sha256> *mtbox-<version>-amd64.tar

@@ -61,6 +61,9 @@
     <label>24h 搜索预算（次，留空恢复 .env 默认）
       <input type="number" name="search_daily_budget" min="1" max="100000" value="{{ values.search_daily_budget }}">
     </label>
+    <label>搜索最小间隔（秒，0 为不限，留空恢复 .env 默认）
+      <input type="number" name="search_min_interval_sec" min="0" max="86400" value="{{ values.search_min_interval_sec }}">
+    </label>
     <label class="checkbox">
       <input type="checkbox" name="auto_grab_default" {% if values.auto_grab_default == 'true' %}checked{% endif %}>
       新建订阅默认自动下载最优条目

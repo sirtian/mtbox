@@ -3,15 +3,95 @@
 {% block content %}
 <h1>搜索 M-Team</h1>
 
-<form method="get" action="/search" class="card form row">
-  <input name="keyword" value="{{ keyword }}" placeholder="剧名 / 电影名 / 关键词" required>
-  <select name="mode">
-    <option value="normal" {% if mode == 'normal' %}selected{% endif %}>normal</option>
-    <option value="tvshow" {% if mode == 'tvshow' %}selected{% endif %}>tvshow</option>
-  </select>
+<form class="filterbar" method="get" action="/search">
+  {% if not category and mode != 'normal' %}
+  <input type="hidden" name="mode" value="{{ mode }}">
+  {% endif %}
+  <label class="keyword">关键词
+    <input name="keyword" value="{{ keyword }}" maxlength="100" placeholder="剧名 / 电影名 / 关键词（可留空）">
+  </label>
+  <label>分类
+    <select name="category" id="category-select">
+      <option value="">全部分类</option>
+      {% for group in category_groups %}
+      <option value="{{ group.key }}" data-mode="{{ group.mode }}" {% if category == group.key %}selected{% endif %}>{{ group.name }}{% if group.adult %}（18+）{% endif %}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>子分类
+    <select name="sub" id="sub-select" class="sub-select">
+      <option value="">全部子分类</option>
+      {% for group in category_groups %}
+      <optgroup label="{{ group.name }}" data-group="{{ group.key }}">
+        {% for child in group.children %}
+        <option value="{{ child.id }}" data-group="{{ group.key }}" {% if sub == child.id %}selected{% endif %}>{{ child.name }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
+  </label>
+  <label>排序
+    <select name="sort">
+      {% for key, label in sort_options %}
+      <option value="{{ key }}" {% if sort == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>优惠
+    <select name="discount">
+      {% for value, label in discount_options %}
+      <option value="{{ value }}" {% if discount == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>每页
+    <select name="size">
+      {% for size in page_sizes %}
+      <option value="{{ size }}" {% if page_size == size %}selected{% endif %}>{{ size }} 条</option>
+      {% endfor %}
+    </select>
+  </label>
   <button type="submit" class="primary">搜索</button>
+  {% if has_query %}<a class="button" href="/search">清除</a>{% endif %}
 </form>
-<p class="hint">手动搜索同样消耗 24h 搜索预算，并受最小间隔限制。</p>
+<p class="hint">
+  分类会自动切换到对应的 M-Team 模式；排序由服务端完成，作用于整个结果集。
+  留空关键词并选择分类可浏览最新资源，也可以
+  <a href="/search?browse=1&sort=created_desc">浏览全部分类最新</a>。
+  手动搜索同样消耗 24h 搜索预算，并受最小间隔限制。
+</p>
+
+<script>
+  (function () {
+    var category = document.getElementById("category-select");
+    var sub = document.getElementById("sub-select");
+    if (!category || !sub) return;
+    var groups = sub.querySelectorAll("optgroup");
+
+    function syncSub() {
+      var selected = category.value;
+      var currentGroup = sub.options[sub.selectedIndex] ? sub.options[sub.selectedIndex].dataset.group : "";
+      for (var i = 0; i < groups.length; i += 1) {
+        groups[i].hidden = !!selected && groups[i].dataset.group !== selected;
+      }
+      if (selected && currentGroup && currentGroup !== selected) {
+        sub.value = "";
+      }
+    }
+
+    function syncCategory() {
+      var option = sub.options[sub.selectedIndex];
+      if (!option || !option.value) return;
+      var group = option.dataset.group;
+      if (group) category.value = group;
+      syncSub();
+    }
+
+    category.addEventListener("change", syncSub);
+    sub.addEventListener("change", syncCategory);
+    syncSub();
+  })();
+</script>
 
 {% if error %}
 <div class="flash flash-error">
@@ -20,18 +100,28 @@
 </div>
 {% endif %}
 
-{% if keyword and not error %}
-<p class="muted">共 {{ total }} 条结果，显示 {{ results | length }} 条。</p>
+{% if has_query and not error %}
+<p class="muted">
+  共 {{ total }} 条
+  {% if total_pages %}· 第 {{ page }} / {{ total_pages }} 页{% endif %}
+  · 本页 {{ results | length }} 条
+  · 排序：{{ sort_label }}
+  {% if group_name %}· 分类：{{ group_name }}{% endif %}
+  {% if discount_label %}· 优惠：{{ discount_label }}{% endif %}
+</p>
 {% if not subscriptions %}
 <div class="flash flash-warn">还没有订阅。请先 <a href="/subscriptions/new">新建订阅</a>，或在结果行点击“预填订阅”。</div>
 {% endif %}
+{% if results %}
 <table class="checks results">
   <thead>
     <tr>
+      <th>标题</th>
       <th>种子</th>
       <th>解析</th>
       <th>体积</th>
       <th>做种</th>
+      <th>完成</th>
       <th>操作</th>
     </tr>
   </thead>
@@ -40,10 +130,18 @@
     {% set item = row.item %}
     {% set parsed = row.parsed %}
     <tr>
+      <td class="title-cell">
+        {% if item.title %}
+        <div class="release">{{ item.title }}</div>
+        {% else %}
+        <span class="muted">—</span>
+        {% endif %}
+      </td>
       <td>
         <div class="release">{{ item.name }}</div>
         <div class="muted small">
           mt_id {{ item.id }} · {{ item.created_at or '' }}
+          {% if row.category_name %}<span class="badge">{{ row.category_name }}</span>{% endif %}
           {% if row.free %}<span class="badge badge-free">FREE</span>{% endif %}
           {% if item.discount %}<span class="badge">{{ item.discount }}</span>{% endif %}
           {% for label in item.labels %}<span class="badge">{{ label }}</span>{% endfor %}
@@ -62,13 +160,15 @@
         </div>
       </td>
       <td class="num">{{ row.size_gb }} GB</td>
-      <td class="num">{{ item.seeders }}</td>
+      <td class="num">{{ item.seeders }}{% if item.leechers %}<div class="muted small">下载 {{ item.leechers }}</div>{% endif %}</td>
+      <td class="num">{{ item.completed }}</td>
       <td>
         <div class="row-actions">
         <a class="button" href="{{ row.prefill_url }}">预填订阅</a>
         {% if subscriptions %}
         <form method="post" action="/search/grab" class="stack">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="back" value="{{ search_query }}">
           <input type="hidden" name="keyword" value="{{ keyword }}">
           <input type="hidden" name="mt_id" value="{{ item.id }}">
           <input type="hidden" name="name" value="{{ item.name }}">
@@ -91,7 +191,24 @@
     {% endfor %}
   </tbody>
 </table>
-{% elif not keyword %}
-<p class="hint">输入关键词开始搜索。建议直接搜索中文剧名。</p>
+
+<div class="pager">
+  {% if prev_url %}
+  <a class="button" href="{{ prev_url }}">上一页</a>
+  {% else %}
+  <span class="button disabled">上一页</span>
+  {% endif %}
+  <span class="muted small">第 {{ page }}{% if total_pages %} / {{ total_pages }}{% endif %} 页</span>
+  {% if next_url %}
+  <a class="button" href="{{ next_url }}">下一页</a>
+  {% else %}
+  <span class="button disabled">下一页</span>
+  {% endif %}
+</div>
+{% else %}
+<p class="hint">没有匹配结果。可以放宽分类或确认关键词。</p>
+{% endif %}
+{% elif not has_query %}
+<p class="hint">输入关键词，或选择分类后开始搜索。也可以选择分类并留空关键词，浏览最新资源。</p>
 {% endif %}
 {% endblock %}

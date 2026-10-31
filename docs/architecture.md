@@ -114,8 +114,9 @@ candidate ──grab──► grabbed ──► downloading ──► completed 
 
 ## 6. 限速与预算
 
-- 搜索：`MT_SEARCH_MIN_INTERVAL_SEC`（默认 20s）最小间隔 + 24h 搜索预算；
-  预算可由设置页的 `search_daily_budget` 覆盖，保存后立即生效。
+- 搜索：`MT_SEARCH_MIN_INTERVAL_SEC`（默认 0，即不限速）最小间隔 + 24h 搜索预算；
+  两者均可由设置页的 `search_min_interval_sec` / `search_daily_budget` 覆盖，
+  保存后立即生效；留空恢复 `.env` 默认。
 - 取种、账号资料各有独立 24h 预算。
 - `api_call` 表持久化调用记录，重启不会重置预算。
 - 手动检查与自动检查共用搜索锁，不会并发搜索。

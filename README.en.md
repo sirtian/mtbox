@@ -18,8 +18,13 @@ Server-rendered, single process, SQLite. No frontend build step, no TMDB depende
   after confirmation by default.
 - **Optional auto-grab** — per-subscription, selecting the best seed combination
   (multiple torrents when needed to cover all aired episodes).
-- **Douban charts** — browse trending TV/movie/variety, filter, and prefill
-  subscriptions. Public pages only; no Douban account or cookie.
+- **Enhanced search** — M-Team categories/subcategories, server-side sorting,
+  discount filters, pagination, and keyword-free browsing; results show both the
+  human-readable title and the release file name.
+- **Douban charts** — browse trending TV/movie/variety with poster cards,
+  filter, and prefill subscriptions. Public pages only; no Douban account or
+  cookie. Posters load through a narrow same-origin proxy because Douban's CDN
+  rejects direct requests from a LAN origin.
 - **Download and organize** — push to qBittorrent, poll progress, then hardlink and
   rename into your library for the media server to scrape.
 - **Ratio guard** — switch to freeleech-only or pause grabbing when account ratio or
@@ -59,7 +64,7 @@ Open `http://NAS_IP:18080/` and sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD`
 Build the image yourself if you do not have one:
 
 ```bash
-docker build -t mtbox:0.5.0 .
+docker build -t mtbox:0.6.3 .
 ```
 
 ### Local

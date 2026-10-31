@@ -3,8 +3,23 @@
 {% block content %}
 <h1>新建订阅</h1>
 
+{% if pending %}
+<div class="flash flash-info">
+  保存后将直接下载所选资源：{{ pending.name }}（mt_id {{ pending.mt_id }}），不再停留在候选列表。
+</div>
+{% endif %}
+
 <form method="post" action="/subscriptions/new" class="card form form-narrow">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if pending %}
+  <input type="hidden" name="mt_id" value="{{ pending.mt_id }}">
+  <input type="hidden" name="mt_name" value="{{ pending.name }}">
+  <input type="hidden" name="mt_size_bytes" value="{{ pending.size_bytes }}">
+  <input type="hidden" name="mt_seeders" value="{{ pending.seeders }}">
+  <input type="hidden" name="mt_discount" value="{{ pending.discount }}">
+  <input type="hidden" name="mt_category" value="{{ pending.category }}">
+  <input type="hidden" name="mt_publish_at" value="{{ pending.publish_at }}">
+  {% endif %}
 
   <label>类型
     <select name="kind">

@@ -21,6 +21,12 @@ from ..services.ratelimit import ApiLimiter
 
 MAX_TORRENT_BYTES = 32 * 1024 * 1024
 
+# Documented by M-Team's OpenAPI schema for POST /torrent/search.
+SORT_FIELDS = frozenset(
+    {"CREATED_DATE", "SIZE", "SEEDERS", "LEECHERS", "TIMES_COMPLETED", "NAME"}
+)
+SORT_DIRECTIONS = frozenset({"ASC", "DESC"})
+
 
 @dataclass(frozen=True, slots=True)
 class MTeamTorrent:
@@ -43,6 +49,10 @@ class MTeamTorrent:
     discount_end_at: str | None
     visible: bool
     banned: bool
+    # M-Team's ``smallDescr`` is the human-readable torrent title (for example
+    # "示例剧 | 2026 | 第1季全12集 | 主演"), while ``name`` is the release/file
+    # name.  Keep both so the UI can show what a result actually means.
+    title: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +62,7 @@ class MTeamSearchResult:
     total: int
     page: int
     page_size: int
+    total_pages: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,12 +156,18 @@ class MTeamClient:
         visible: int = 1,
         categories: list[str] | None = None,
         discount: str | None = None,
+        sort_field: str | None = None,
+        sort_direction: str | None = None,
         wait: bool = True,
     ) -> MTeamSearchResult:
         if page < 1:
             raise ValueError("page 必须 >= 1")
         if not 1 <= page_size <= 100:
             raise ValueError("page_size 必须在 1..100")
+        if sort_field is not None and sort_field not in SORT_FIELDS:
+            raise ValueError(f"不支持的 sort_field: {sort_field}")
+        if sort_direction is not None and sort_direction not in SORT_DIRECTIONS:
+            raise ValueError(f"不支持的 sort_direction: {sort_direction}")
 
         body: dict[str, Any] = {
             "keyword": keyword,
@@ -164,6 +181,9 @@ class MTeamClient:
             body["categories"] = [str(item) for item in categories]
         if discount:
             body["discount"] = discount
+        if sort_field:
+            body["sortField"] = sort_field
+            body["sortDirection"] = sort_direction or "DESC"
 
         self.limiter.acquire("search", wait=wait)
         try:
@@ -177,13 +197,16 @@ class MTeamClient:
         else:
             self.limiter.record("search", True)
 
-        items, total, page_number, returned_size = self._normalize_search(data, page, page_size)
+        items, total, page_number, returned_size, total_pages = self._normalize_search(
+            data, page, page_size
+        )
         return MTeamSearchResult(
             query=keyword,
             items=tuple(self._parse_item(item) for item in items if isinstance(item, dict)),
             total=total,
             page=page_number,
             page_size=returned_size,
+            total_pages=total_pages,
         )
 
     def gen_download_url(self, mt_id: str) -> str:
@@ -320,22 +343,26 @@ class MTeamClient:
     @staticmethod
     def _normalize_search(
         data: Any, requested_page: int, requested_size: int
-    ) -> tuple[list[Any], int, int, int]:
+    ) -> tuple[list[Any], int, int, int, int]:
         if isinstance(data, dict):
             raw_items = data.get("data") or data.get("list") or data.get("torrents") or []
             total = _as_int(data.get("total") or data.get("totalCount"), len(raw_items))
             page = _as_int(data.get("pageNumber"), requested_page)
             page_size = _as_int(data.get("pageSize"), requested_size)
+            total_pages = _as_int(data.get("totalPages"))
+            if total_pages <= 0 and total > 0 and page_size > 0:
+                total_pages = (total + page_size - 1) // page_size
         elif isinstance(data, list):
             raw_items = data
             total = len(data)
             page = requested_page
             page_size = requested_size
+            total_pages = 1 if data else 0
         else:
             raise MTeamApiError("", "搜索结果结构异常")
         if not isinstance(raw_items, list):
             raise MTeamApiError("", "搜索结果列表异常")
-        return raw_items, total, page, page_size
+        return raw_items, total, page, page_size, total_pages
 
     @staticmethod
     def _parse_item(item: dict[str, Any]) -> MTeamTorrent:
@@ -349,10 +376,16 @@ class MTeamClient:
             )
             if text
         )
+        title = str(
+            item.get("smallDescr") or item.get("title") or item.get("description") or ""
+        )[:500]
         return MTeamTorrent(
             id=str(item.get("id", "")),
-            name=str(item.get("name") or item.get("title") or ""),
-            description=str(item.get("smallDescr") or item.get("description") or ""),
+            name=str(item.get("name") or item.get("title") or "")[:500],
+            description=str(
+                item.get("smallDescr") or item.get("description") or ""
+            )[:500],
+            title=title,
             category=_as_text(item.get("category")),
             size_bytes=_as_int(item.get("size")),
             file_count=_as_int(item.get("numfiles")),

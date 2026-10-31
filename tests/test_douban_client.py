@@ -3,8 +3,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.clients.douban import DoubanClient
+from app.clients.douban import DoubanClient, normalize_cover_url
 from app.errors import DoubanError
+
+COVER = "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2936709341.jpg"
 
 
 def payload() -> dict[str, object]:
@@ -18,7 +20,7 @@ def payload() -> dict[str, object]:
                 "card_subtitle": "2026 / 中国大陆 / 剧情",
                 "episodes_info": "更新至 12 集",
                 "rating": {"value": 8.2, "count": 1234},
-                "pic": {"normal": "https://img.example/poster.jpg"},
+                "pic": {"normal": COVER},
             },
             {
                 "id": "1234567",
@@ -58,7 +60,7 @@ def test_fetch_parses_and_caches() -> None:
     assert item.rating == 8.2
     assert item.rating_count == 1234
     assert item.episodes_info == "更新至 12 集"
-    assert item.cover_url == "https://img.example/poster.jpg"
+    assert item.cover_url == COVER
     assert item.url == "https://movie.douban.com/subject/36675942/"
     assert item.rank == 1
     assert first.items[1].cover_url is None
@@ -99,7 +101,7 @@ def test_variety_chart_uses_recommend_with_type_tag() -> None:
                         "year": "2024",
                         "rating": {"value": 8.8, "count": 77},
                         "card_subtitle": "2024 / 中国大陆 / 真人秀",
-                        "pic": {"normal": "https://img.example/variety.jpg"},
+                        "pic": {"normal": COVER},
                     },
                     {
                         "id": "36247293",
@@ -137,7 +139,7 @@ def test_variety_chart_uses_recommend_with_type_tag() -> None:
     assert first.rating == 8.8
     assert first.rating_count == 77
     assert first.subtitle == "2024 / 中国大陆 / 真人秀"
-    assert first.cover_url == "https://img.example/variety.jpg"
+    assert first.cover_url == COVER
     assert first.rank == 21
     assert chart.items[1].cover_url is None
     assert chart.items[1].rating is None
@@ -236,7 +238,12 @@ def filtered_payload(
                 "rating": {"value": 8.1, "count": 4321},
                 "card_subtitle": f"{year} / 中国大陆 / 喜剧",
                 "episodes_info": "",
-                "pic": {"normal": f"https://img.example/{index}.jpg"},
+                "pic": {
+                    "normal": (
+                        "https://img2.doubanio.com/view/photo/"
+                        f"s_ratio_poster/public/p{index}.jpg"
+                    )
+                },
             }
             for index in range(count)
         ],
@@ -276,7 +283,9 @@ def test_filtered_chart_uses_recommend_tags() -> None:
     assert item.rating == 8.1
     assert item.rating_count == 4321
     assert item.subtitle == "2024 / 中国大陆 / 喜剧"
-    assert item.cover_url == "https://img.example/0.jpg"
+    assert item.cover_url == (
+        "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p0.jpg"
+    )
     assert item.rank == 21
 
 
@@ -489,3 +498,96 @@ def test_network_error_without_cache_raises() -> None:
         douban = DoubanClient(client=http)
         with pytest.raises(DoubanError):
             douban.fetch()
+
+
+def test_normalize_cover_url_only_accepts_douban_posters() -> None:
+    assert normalize_cover_url(COVER) == COVER
+    assert normalize_cover_url(
+        "https://img9.doubanio.com/view/photo/l_ratio_poster/public/p1.webp"
+    )
+    for value in (
+        "http://img2.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg",
+        "https://img.example/view/photo/s_ratio_poster/public/p1.jpg",
+        "https://img2.doubanio.com/not-a-poster.jpg",
+        "https://img2.doubanio.com/view/photo/../secret.jpg",
+        "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg?x=1",
+        "https://user:pass@img2.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg",
+        "https://img2.doubanio.com:8443/view/photo/s_ratio_poster/public/p1.jpg",
+        "javascript:alert(1)",
+        "",
+        None,
+    ):
+        assert normalize_cover_url(value) is None
+
+
+def test_fetch_cover_uses_referer_and_caches() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200, content=b"\xff\xd8poster", headers={"content-type": "image/jpeg"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        douban = DoubanClient(client=http, cache_sec=600)
+        first = douban.fetch_cover(COVER)
+        second = douban.fetch_cover(COVER)
+
+    assert first == (b"\xff\xd8poster", "image/jpeg")
+    assert second == first
+    assert len(calls) == 1
+    assert calls[0].url.host == "img2.doubanio.com"
+    assert calls[0].url.path == "/view/photo/s_ratio_poster/public/p2936709341.jpg"
+    assert calls[0].headers["referer"] == "https://m.douban.com/"
+    assert calls[0].headers["accept"].startswith("image/")
+
+
+def test_fetch_cover_rejects_invalid_url_without_network() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, content=b"x")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        douban = DoubanClient(client=http)
+        with pytest.raises(DoubanError):
+            douban.fetch_cover("https://example.com/poster.jpg")
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(302, headers={"location": "https://example.com/poster.jpg"}),
+        httpx.Response(
+            200,
+            text="<html>blocked</html>",
+            headers={"content-type": "text/html"},
+        ),
+        httpx.Response(
+            200, content=b"x", headers={"content-type": "image/svg+xml"}
+        ),
+        httpx.Response(
+            200,
+            content=b"x" * (2 * 1024 * 1024 + 1),
+            headers={"content-type": "image/jpeg"},
+        ),
+        httpx.Response(
+            200, content=b"", headers={"content-type": "image/jpeg"}
+        ),
+    ],
+)
+def test_fetch_cover_rejects_bad_upstream(response: httpx.Response) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return response
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        douban = DoubanClient(client=http)
+        with pytest.raises(DoubanError):
+            douban.fetch_cover(COVER)

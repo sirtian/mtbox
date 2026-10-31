@@ -34,6 +34,22 @@ from ..services import credentials, profile_guard, settings_store
 from ..services.audit import log_event, recent_events
 from ..services.downloader import DownloadService
 from ..services.matcher import Matcher, is_free
+from ..services.mteam_categories import (
+    CATEGORY_GROUPS,
+    CATEGORY_INDEX,
+    DISCOUNT_OPTIONS,
+    PAGE_SIZES,
+    SORT_OPTIONS,
+    category_label,
+    library_category_for,
+    mode_for_filter,
+    normalize_discount,
+    normalize_page_size,
+    normalize_sort,
+    resolve_category,
+    sort_label,
+    sort_params,
+)
 from ..services.notifier import notify_config_error
 from ..services.organizer import Organizer
 from ..services.poller import Poller
@@ -363,9 +379,15 @@ def douban_page(request: Request) -> Response:
                 prefill["season"] = str(season_from_title(item.title) or 1)
             if library_category:
                 prefill["library_category"] = library_category
+            cover_url = (
+                "/douban/cover?url=" + quote(item.cover_url, safe="")
+                if item.cover_url
+                else ""
+            )
             items.append(
                 {
                     "item": item,
+                    "cover_url": cover_url,
                     "prefill_url": "/subscriptions/new?" + urlencode(prefill),
                 }
             )
@@ -437,24 +459,145 @@ def douban_page(request: Request) -> Response:
     )
 
 
+@router.get("/douban/cover")
+def douban_cover(request: Request, url: str = "") -> Response:
+    """Serve a poster from Douban's CDN with the required Referer.
+
+    Browsers cannot load doubanio.com images directly from a LAN origin
+    (the CDN answers 418/403).  The client validates the URL against a CDN
+    allowlist before fetching, so this stays a narrow image passthrough.
+    """
+    _require_user(request)
+    douban = getattr(request.app.state, "douban", None)
+    if douban is None:
+        return Response(
+            status_code=404, headers={"Cache-Control": "no-store"}
+        )
+    try:
+        body, media_type = douban.fetch_cover(url)
+    except DoubanError:
+        return Response(
+            status_code=404, headers={"Cache-Control": "no-store"}
+        )
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 # ---------- search ----------
+
+
+def _pending_torrent(
+    *,
+    mt_id: str,
+    name: str,
+    size_bytes: str | int,
+    seeders: str | int,
+    discount: str,
+    category: str,
+    publish_at: str,
+) -> dict[str, object] | None:
+    """Normalise the search result carried into the new-subscription form.
+
+    Values arrive as query/form strings, so a crafted link could claim any
+    ID or an oversized title.  Anything that does not look like a real M-Team
+    torrent ID is dropped and the subscription is created without an immediate
+    grab.
+    """
+    torrent_id = str(mt_id).strip()
+    title = str(name).strip()[:500]
+    if not torrent_id.isdigit() or len(torrent_id) > 20 or not title:
+        return None
+
+    def as_count(value: object) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    category_id = str(category).strip()
+    if category_id not in CATEGORY_INDEX:
+        category_id = ""
+    return {
+        "mt_id": torrent_id,
+        "name": title,
+        "size_bytes": as_count(size_bytes),
+        "seeders": as_count(seeders),
+        "discount": str(discount).strip()[:32],
+        "category": category_id,
+        "publish_at": str(publish_at).strip()[:40],
+    }
 
 
 @router.get("/search", response_class=HTMLResponse)
 def search_page(request: Request) -> Response:
     _require_user(request)
     subscriptions, _, _, _ = _services(request)
-    keyword = (request.query_params.get("keyword") or "").strip()
-    mode = request.query_params.get("mode") or "normal"
+    params = request.query_params
+
+    keyword = (params.get("keyword") or "").strip()[:100]
+    category_key = (params.get("category") or "").strip()
+    sub_id = (params.get("sub") or "").strip()
+    # Allow a leaf ID in ``category`` as a shortcut for ``?category=movie&sub=419``.
+    if category_key in CATEGORY_INDEX and not sub_id:
+        sub_id, category_key = category_key, ""
+    group, categories = resolve_category(category_key, sub_id)
+    sub_selected = sub_id if sub_id in CATEGORY_INDEX else ""
+    library_category = library_category_for(group, sub_selected)
+    mode = mode_for_filter(group, params.get("mode"))
+
+    sort_key = normalize_sort(params.get("sort"))
+    sort_field, sort_direction = sort_params(sort_key)
+    discount = normalize_discount(params.get("discount"))
+    page_size = normalize_page_size(params.get("size"))
+    try:
+        page = max(1, min(1000, int(params.get("page") or 1)))
+    except ValueError:
+        page = 1
+    browse = params.get("browse") == "1"
+    has_query = bool(keyword or categories or discount or browse)
+
+    def link(**overrides: object) -> str:
+        values: dict[str, object] = {
+            "keyword": keyword,
+            "category": group.key if group else "",
+            "sub": sub_selected,
+            "sort": sort_key,
+            "discount": discount,
+            "size": page_size,
+            "mode": mode if group is None and mode != "normal" else "",
+            "browse": "1" if browse else "",
+            "page": page,
+        }
+        values.update(overrides)
+        cleaned = {key: value for key, value in values.items() if value not in ("", None)}
+        return "/search?" + urlencode(cleaned)
+
     results: list[dict[str, object]] = []
     error: str | None = None
     retry_after: int | None = None
     total = 0
+    total_pages = 0
 
-    if keyword:
+    if has_query:
         state = request.app.state
         try:
-            found = state.mt.search(keyword, mode=mode, page_size=50, wait=False)
+            found = state.mt.search(
+                keyword,
+                mode=mode,
+                page=page,
+                page_size=page_size,
+                categories=categories,
+                discount=discount or None,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+                wait=False,
+            )
         except RateLimitBusy as exc:
             error = str(exc)
             retry_after = exc.retry_after
@@ -462,6 +605,9 @@ def search_page(request: Request) -> Response:
             error = str(exc)
         else:
             total = found.total
+            total_pages = found.total_pages
+            if total_pages <= 0 and total > 0:
+                total_pages = (total + page_size - 1) // page_size
             for item in found.items:
                 parsed = parse_release(item.name)
                 kind_guess = (
@@ -477,12 +623,25 @@ def search_page(request: Request) -> Response:
                     "season": parsed.season or 1,
                     "douban_id": _digits(item.douban),
                     "imdb_id": item.imdb or "",
+                    # The selected filter category becomes the media library
+                    # category; the chosen result travels along so confirming
+                    # the form can grab it without a manual candidate step.
+                    "mt_id": item.id,
+                    "mt_name": item.name,
+                    "mt_size_bytes": item.size_bytes,
+                    "mt_seeders": item.seeders,
+                    "mt_discount": item.discount or "",
+                    "mt_category": item.category or "",
+                    "mt_publish_at": item.created_at or "",
                 }
+                if library_category:
+                    prefill["library_category"] = library_category
                 results.append(
                     {
                         "item": item,
                         "parsed": parsed,
                         "kind_guess": kind_guess,
+                        "category_name": category_label(item.category),
                         "size_gb": round(item.size_bytes / (1024**3), 2),
                         "free": is_free(item.discount),
                         "prefill_url": "/subscriptions/new?" + urlencode(prefill),
@@ -494,6 +653,28 @@ def search_page(request: Request) -> Response:
         "search.html",
         keyword=keyword,
         mode=mode,
+        category=group.key if group else "",
+        sub=sub_selected,
+        group_name=group.name if group else "",
+        sort=sort_key,
+        sort_label=sort_label(sort_key),
+        discount=discount,
+        discount_label=dict(DISCOUNT_OPTIONS).get(discount, ""),
+        page_size=page_size,
+        page=page,
+        total_pages=total_pages,
+        browse=browse,
+        has_query=has_query,
+        search_query=link(),
+        prev_url=link(page=page - 1) if page > 1 else "",
+        next_url=link(page=page + 1) if total_pages and page < total_pages else "",
+        category_groups=CATEGORY_GROUPS,
+        sort_options=[
+            (key, label)
+            for key, (_, _, label) in SORT_OPTIONS.items()
+        ],
+        discount_options=DISCOUNT_OPTIONS,
+        page_sizes=PAGE_SIZES,
         results=results,
         total=total,
         error=error,
@@ -514,6 +695,7 @@ def search_grab(
     publish_at: str = Form(""),
     subscription_id: int = Form(...),
     keyword: str = Form(""),
+    back: str = Form(""),
     csrf_token: str = Form(""),
 ) -> Response:
     _require_user(request)
@@ -521,7 +703,16 @@ def search_grab(
     if failed:
         return failed
     subscriptions, downloader, _, _ = _services(request)
-    back = "/search?" + urlencode({"keyword": keyword})
+    candidate = back.strip()
+    if (
+        candidate.startswith("/search?")
+        and "://" not in candidate
+        and "\n" not in candidate
+        and "\r" not in candidate
+    ):
+        back = candidate
+    else:
+        back = "/search?" + urlencode({"keyword": keyword})
 
     try:
         sub = subscriptions.get(subscription_id)
@@ -664,7 +855,16 @@ def subscription_new_page(request: Request) -> Response:
         "auto_grab": params.get("auto_grab")
         or ("1" if settings_store.get_bool(state.db, "auto_grab_default", False) else ""),
     }
-    return _render(request, "subscription_new.html", prefill=prefill)
+    pending = _pending_torrent(
+        mt_id=params.get("mt_id") or "",
+        name=params.get("mt_name") or "",
+        size_bytes=params.get("mt_size_bytes") or "",
+        seeders=params.get("mt_seeders") or "",
+        discount=params.get("mt_discount") or "",
+        category=params.get("mt_category") or "",
+        publish_at=params.get("mt_publish_at") or "",
+    )
+    return _render(request, "subscription_new.html", prefill=prefill, pending=pending)
 
 
 @router.post("/subscriptions/new")
@@ -683,13 +883,20 @@ def subscription_create(
     episode_to: str = Form(""),
     interval_min: int = Form(30),
     auto_grab: str = Form(""),
+    mt_id: str = Form(""),
+    mt_name: str = Form(""),
+    mt_size_bytes: str = Form(""),
+    mt_seeders: str = Form(""),
+    mt_discount: str = Form(""),
+    mt_category: str = Form(""),
+    mt_publish_at: str = Form(""),
     csrf_token: str = Form(""),
 ) -> Response:
     _require_user(request)
     failed = _check_csrf(request, csrf_token)
     if failed:
         return failed
-    subscriptions, _, _, _ = _services(request)
+    subscriptions, downloader, _, _ = _services(request)
     try:
         sub = subscriptions.create(
             {
@@ -708,7 +915,33 @@ def subscription_create(
                 "auto_grab": auto_grab == "on",
             }
         )
-        _flash(request, f"订阅「{sub.title}」已创建")
+        message = f"订阅「{sub.title}」已创建"
+        level = "info"
+        pending = _pending_torrent(
+            mt_id=mt_id,
+            name=mt_name,
+            size_bytes=mt_size_bytes,
+            seeders=mt_seeders,
+            discount=mt_discount,
+            category=mt_category,
+            publish_at=mt_publish_at,
+        )
+        if pending is not None:
+            try:
+                torrent_id = _upsert_torrent(request, sub, **pending)
+                result = downloader.grab(
+                    torrent_id, actor=str(request.session.get("user") or "manual")
+                )
+                level = "info" if result.outcome in {"grabbed", "dry_run"} else "warn"
+                message = f"{message}；{result.message}"
+            except (Conflict, NotFound, MTBoxError) as exc:
+                level = "error"
+                message = f"{message}；资源下载失败：{exc}"
+            except Exception as exc:  # defensive: subscription is already saved
+                log.exception("订阅创建后自动抓取失败")
+                level = "error"
+                message = f"{message}；资源下载失败：{exc}"
+        _flash(request, message, level)
         return RedirectResponse("/subscriptions", status_code=303)
     except Conflict as exc:
         _flash(request, str(exc), "error")
@@ -1310,6 +1543,10 @@ def settings_page(request: Request) -> Response:
         settings_store.SEARCH_DAILY_BUDGET_KEY,
         str(state.settings.mt_search_daily_budget),
     )
+    values.setdefault(
+        settings_store.SEARCH_MIN_INTERVAL_KEY,
+        str(state.settings.mt_search_min_interval_sec),
+    )
     # Never pass credentials to the template, even if a future field is added.
     for key in credentials.SECRET_KEYS:
         values.pop(key, None)
@@ -1335,6 +1572,7 @@ def settings_save(
     max_seed_hours: str = Form("336"),
     daily_download_budget_gb: str = Form("50"),
     search_daily_budget: str = Form(""),
+    search_min_interval_sec: str = Form(""),
     disk_pause_percent: str = Form("90"),
     min_score: str = Form("45"),
     min_ratio: str = Form("1.0"),
@@ -1411,6 +1649,19 @@ def settings_save(
                 errors.append("search_daily_budget 必须在 1..100000")
             else:
                 updates[settings_store.SEARCH_DAILY_BUDGET_KEY] = str(search_budget)
+
+    search_interval_text = search_min_interval_sec.strip()
+    clear_search_interval = not search_interval_text
+    if search_interval_text:
+        try:
+            search_interval = int(search_interval_text)
+        except ValueError:
+            errors.append("search_min_interval_sec 必须是整数")
+        else:
+            if not 0 <= search_interval <= 86400:
+                errors.append("search_min_interval_sec 必须在 0..86400")
+            else:
+                updates[settings_store.SEARCH_MIN_INTERVAL_KEY] = str(search_interval)
 
     for key, template in (
         ("movie_path_template", movie_path_template),
@@ -1492,6 +1743,8 @@ def settings_save(
     if clear_search_budget:
         # Empty field restores the .env fallback instead of pinning a value.
         settings_store.delete_values(db, [settings_store.SEARCH_DAILY_BUDGET_KEY])
+    if clear_search_interval:
+        settings_store.delete_values(db, [settings_store.SEARCH_MIN_INTERVAL_KEY])
     for key in changed_secrets:
         if new_secrets[key]:
             credentials.save(db, key, new_secrets[key])

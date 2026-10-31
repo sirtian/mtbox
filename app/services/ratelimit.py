@@ -154,7 +154,13 @@ class ApiLimiter:
     def _interval_remaining(self, endpoint: str) -> float:
         if endpoint != "search":
             return 0.0
-        min_interval = self.settings.mt_search_min_interval_sec
+        # The settings page can disable or change the interval without a
+        # restart; the .env value remains the fallback.
+        min_interval = settings_store.effective_search_min_interval(
+            self.db, self.settings.mt_search_min_interval_sec
+        )
+        if min_interval <= 0:
+            return 0.0
         last_ts = self._last_call.get(endpoint)
         if last_ts is None:
             with self.db.read() as conn:

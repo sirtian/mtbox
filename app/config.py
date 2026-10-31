@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     mt_api_key: str = ""
     mt_api_base: str = "https://api.m-team.cc/api"
     mt_user_agent: str = DEFAULT_USER_AGENT
-    mt_search_min_interval_sec: int = 20
+    mt_search_min_interval_sec: int = 0
     mt_search_daily_budget: int = 400
     mt_download_daily_budget: int = 60
     mt_profile_daily_budget: int = 200

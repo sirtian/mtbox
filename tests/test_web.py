@@ -10,8 +10,9 @@ from fastapi.testclient import TestClient
 from app.clients.douban import DoubanChart, DoubanItem
 from app.clients.mteam import MTeamSearchResult, MTeamTorrent
 from app.config import Settings
-from app.errors import DoubanError
+from app.errors import Conflict, DoubanError, RateLimitBusy
 from app.main import create_app
+from app.services.downloader import GrabResult
 from app.services.search_service import CheckSummary
 from app.timeutil import utc_now_iso
 from tests.helpers import insert_subscription, insert_torrent, make_db
@@ -74,11 +75,16 @@ def login(client: TestClient, password: str = "secret"):
     return response
 
 
-def _item(mt_id: str = "101", name: str = "示例剧.S01E02.1080p.WEB-DL.H.264-GROUP") -> MTeamTorrent:
+def _item(
+    mt_id: str = "101",
+    name: str = "示例剧.S01E02.1080p.WEB-DL.H.264-GROUP",
+    title: str = "示例剧 | 2026 | 第1季全12集 | 主演",
+) -> MTeamTorrent:
     return MTeamTorrent(
         id=mt_id,
         name=name,
         description="",
+        title=title,
         category="tv",
         size_bytes=2 * 1024**3,
         file_count=1,
@@ -99,13 +105,21 @@ def _item(mt_id: str = "101", name: str = "示例剧.S01E02.1080p.WEB-DL.H.264-G
 
 
 class FakeMT:
-    def __init__(self, items: list[MTeamTorrent]) -> None:
+    def __init__(self, items: list[MTeamTorrent], total_pages: int = 0) -> None:
         self.items = items
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.total_pages = total_pages
 
     def search(self, keyword: str, **kwargs: object) -> MTeamSearchResult:
         self.calls.append((keyword, kwargs))
-        return MTeamSearchResult(keyword, tuple(self.items), len(self.items), 1, 50)
+        return MTeamSearchResult(
+            keyword,
+            tuple(self.items),
+            len(self.items),
+            1,
+            50,
+            self.total_pages,
+        )
 
 
 # ---------- auth ----------
@@ -208,20 +222,149 @@ def test_search_renders_results(client: TestClient) -> None:
     client.app.state.mt = FakeMT([_item()])  # type: ignore[attr-defined]
     response = client.get("/search?keyword=示例剧")
     assert response.status_code == 200
+    assert "<th>标题</th>" in response.text
+    assert "示例剧 | 2026 | 第1季全12集 | 主演" in response.text
     assert "示例剧.S01E02" in response.text
     assert "FREE" in response.text
     assert "预填订阅" in response.text
     assert client.app.state.mt.calls[0][0] == "示例剧"  # type: ignore[attr-defined]
 
 
+def test_search_passes_group_sort_discount_and_pagination(client: TestClient) -> None:
+    login(client)
+    fake = FakeMT([_item()], total_pages=5)
+    client.app.state.mt = fake  # type: ignore[attr-defined]
+
+    response = client.get(
+        "/search?keyword=示例&category=movie&sort=seeders_desc"
+        "&discount=FREE&size=20&page=2"
+    )
+
+    assert response.status_code == 200
+    _, kwargs = fake.calls[0]
+    assert kwargs["mode"] == "movie"
+    assert kwargs["categories"] == ["401", "419", "420", "421", "439"]
+    assert kwargs["sort_field"] == "SEEDERS"
+    assert kwargs["sort_direction"] == "DESC"
+    assert kwargs["discount"] == "FREE"
+    assert kwargs["page"] == 2
+    assert kwargs["page_size"] == 20
+    assert "排序：做种最多" in response.text
+    assert "分类：电影" in response.text
+    assert "page=3" in response.text
+
+
+def test_search_subcategory_shortcut_and_leaf_category(client: TestClient) -> None:
+    login(client)
+    fake = FakeMT([_item()])
+    client.app.state.mt = fake  # type: ignore[attr-defined]
+
+    client.get("/search?category=tvshow&sub=402")
+    assert fake.calls[-1][1]["categories"] == ["402"]
+    assert fake.calls[-1][1]["mode"] == "tvshow"
+
+    client.get("/search?category=419")
+    assert fake.calls[-1][1]["categories"] == ["419"]
+    assert fake.calls[-1][1]["mode"] == "movie"
+
+
+def test_search_adult_group_uses_adult_mode(client: TestClient) -> None:
+    login(client)
+    fake = FakeMT([_item()])
+    client.app.state.mt = fake  # type: ignore[attr-defined]
+
+    client.get("/search?category=adult")
+
+    assert fake.calls[-1][1]["mode"] == "adult"
+    assert len(fake.calls[-1][1]["categories"]) == 15
+
+
+def test_search_invalid_filters_fall_back(client: TestClient) -> None:
+    login(client)
+    fake = FakeMT([_item()])
+    client.app.state.mt = fake  # type: ignore[attr-defined]
+
+    response = client.get("/search?keyword=x&category=bogus&sort=bogus&size=999")
+
+    assert response.status_code == 200
+    _, kwargs = fake.calls[0]
+    assert kwargs["categories"] is None
+    assert kwargs["sort_field"] == "CREATED_DATE"
+    assert kwargs["sort_direction"] == "DESC"
+    assert kwargs["page_size"] == 50
+
+
+def test_search_empty_query_does_not_spend_budget(client: TestClient) -> None:
+    login(client)
+    fake = FakeMT([_item()])
+    client.app.state.mt = fake  # type: ignore[attr-defined]
+
+    response = client.get("/search")
+
+    assert response.status_code == 200
+    assert fake.calls == []
+    assert "输入关键词" in response.text
+
+
+def test_search_browse_without_keyword(client: TestClient) -> None:
+    login(client)
+    fake = FakeMT([_item()])
+    client.app.state.mt = fake  # type: ignore[attr-defined]
+
+    response = client.get("/search?browse=1&category=anime&sort=size_desc")
+
+    assert response.status_code == 200
+    assert fake.calls[0][1]["categories"] == ["405", "453"]
+    assert fake.calls[0][1]["mode"] == "anime"
+    assert fake.calls[0][1]["sort_field"] == "SIZE"
+
+
+def test_search_grab_preserves_search_query(client: TestClient) -> None:
+    login(client)
+    sub_id = insert_subscription(client.app.state.db, title="示例电影")  # type: ignore[attr-defined]
+    token = csrf(client, "/search?keyword=x")
+    response = client.post(
+        "/search/grab",
+        data={
+            "csrf_token": token,
+            "back": "/search?keyword=x&category=movie&sort=seeders_desc",
+            "mt_id": "9999",
+            "name": "Some.Movie.2026.1080p",
+            "size_bytes": "1000",
+            "seeders": "1",
+            "discount": "",
+            "category": "419",
+            "publish_at": "2026-10-01 12:00:00",
+            "subscription_id": str(sub_id),
+            "keyword": "x",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith(
+        "/search?keyword=x&category=movie&sort=seeders_desc"
+    )
+
+
 # ---------- douban ----------
 
 
+DOUBAN_COVER = (
+    "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2936709341.jpg"
+)
+
+
 class FakeDouban:
-    def __init__(self, title: str = "榜单示例剧", total: int = 40) -> None:
+    def __init__(
+        self,
+        title: str = "榜单示例剧",
+        total: int = 40,
+        cover_url: str | None = DOUBAN_COVER,
+    ) -> None:
         self.calls: list[tuple[str, str, int, int, bool, str, str]] = []
         self.title = title
         self.total = total
+        self.cover_url = cover_url
 
     def fetch(
         self,
@@ -248,7 +391,7 @@ class FakeDouban:
                     rating_count=1234,
                     subtitle="2026 / 中国大陆 / 剧情",
                     episodes_info="更新至 12 集",
-                    cover_url=None,
+                    cover_url=self.cover_url,
                     url="https://movie.douban.com/subject/36675942/",
                     rank=start + 1,
                 ),
@@ -273,6 +416,9 @@ def test_douban_page_renders_and_prefills(client: TestClient) -> None:
     assert "榜单示例剧" in response.text
     assert "更新至 12 集" in response.text
     assert "douban_id=36675942" in response.text
+    assert "/douban/cover?url=" in response.text
+    assert "img2.doubanio.com%2Fview%2Fphoto" in response.text
+    assert 'src="https://img2.doubanio.com' not in response.text
     assert fake.calls == [("tv", "U", 0, 20, False, "", "")]
 
     refreshed = client.get("/douban?kind=movie&sort=R&refresh=1")
@@ -347,6 +493,56 @@ def test_search_prefills_season_for_season_pack(client: TestClient) -> None:
     assert response.status_code == 200
     assert "season=2" in response.text
     assert "kind=tv" in response.text
+
+
+def test_search_prefill_carries_category_and_selected_torrent(
+    client: TestClient,
+) -> None:
+    login(client)
+    client.app.state.mt = FakeMT([_item()])  # type: ignore[attr-defined]
+
+    response = client.get("/search?keyword=示例剧&category=anime")
+
+    # “动画”映射到媒体库常用的“动漫”，并带上当前选中的种子。
+    assert "library_category=%E5%8A%A8%E6%BC%AB" in response.text
+    assert "mt_id=101" in response.text
+    assert "mt_name=%E7%A4%BA%E4%BE%8B%E5%89%A7" in response.text
+    assert "mt_size_bytes=2147483648" in response.text
+
+
+def test_search_prefill_without_category_omits_library_category(
+    client: TestClient,
+) -> None:
+    login(client)
+    client.app.state.mt = FakeMT([_item()])  # type: ignore[attr-defined]
+
+    response = client.get("/search?keyword=示例剧")
+
+    assert "library_category=" not in response.text
+    assert "mt_id=101" in response.text
+
+
+def test_search_prefill_tvshow_maps_to_tv_library_category(
+    client: TestClient,
+) -> None:
+    login(client)
+    client.app.state.mt = FakeMT([_item()])  # type: ignore[attr-defined]
+
+    response = client.get("/search?category=tvshow")
+
+    assert "library_category=%E7%94%B5%E8%A7%86%E5%89%A7" in response.text
+
+
+def test_search_prefill_uses_semantic_subcategory(client: TestClient) -> None:
+    login(client)
+    client.app.state.mt = FakeMT([_item()])  # type: ignore[attr-defined]
+
+    semantic = client.get("/search?category=music&sub=406")
+    assert "library_category=%E6%BC%94%E5%94%B1%E4%BC%9A" in semantic.text  # 演唱会
+
+    # 画质档不覆盖父分类：电影/HD 仍然预填“电影”。
+    quality = client.get("/search?category=movie&sub=419")
+    assert "library_category=%E7%94%B5%E5%BD%B1" in quality.text
 
 
 def test_douban_page_has_variety_tab(client: TestClient) -> None:
@@ -437,6 +633,141 @@ def test_subscription_new_prefills_library_category(client: TestClient) -> None:
     assert 'name="library_category" value="动漫"' in response.text
 
 
+def test_subscription_new_keeps_selected_torrent(client: TestClient) -> None:
+    login(client)
+    response = client.get(
+        "/subscriptions/new",
+        params={
+            "kind": "tv",
+            "title": "示例剧",
+            "library_category": "动漫",
+            "mt_id": "101",
+            "mt_name": "示例剧.S01E02.1080p.WEB-DL",
+            "mt_size_bytes": "1000",
+            "mt_seeders": "12",
+            "mt_discount": "FREE",
+            "mt_category": "402",
+            "mt_publish_at": "2026-10-20 12:00:00",
+        },
+    )
+    assert response.status_code == 200
+    assert "保存后将直接下载所选资源" in response.text
+    assert 'name="mt_id" value="101"' in response.text
+    assert 'name="mt_name" value="示例剧.S01E02.1080p.WEB-DL"' in response.text
+    assert 'name="mt_category" value="402"' in response.text
+    assert 'name="mt_discount" value="FREE"' in response.text
+    assert 'name="library_category" value="动漫"' in response.text
+
+
+class RecordingDownloader:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str]] = []
+
+    def grab(self, torrent_id: int, *, actor: str = "manual") -> GrabResult:
+        self.calls.append((torrent_id, actor))
+        return GrabResult(torrent_id, "grabbed", "已开始下载")
+
+
+def _prefilled_subscription_data(token: str) -> dict[str, str]:
+    return {
+        "kind": "tv",
+        "title": "示例剧",
+        "original_title": "",
+        "year": "2026",
+        "season": "1",
+        "douban_id": "",
+        "imdb_id": "",
+        "library_category": "动漫",
+        "episode_offset": "0",
+        "episode_from": "",
+        "episode_to": "",
+        "interval_min": "30",
+        "auto_grab": "",
+        "mt_id": "101",
+        "mt_name": "示例剧.S01E02.1080p.WEB-DL.H.264-GROUP",
+        "mt_size_bytes": "2147483648",
+        "mt_seeders": "12",
+        "mt_discount": "FREE",
+        "mt_category": "402",
+        "mt_publish_at": "2026-10-20 12:00:00",
+        "csrf_token": token,
+    }
+
+
+def test_create_subscription_from_search_result_grabs_immediately(
+    client: TestClient,
+) -> None:
+    login(client)
+    downloader = RecordingDownloader()
+    client.app.state.downloader = downloader  # type: ignore[attr-defined]
+    token = csrf(client, "/subscriptions/new")
+
+    response = client.post(
+        "/subscriptions/new",
+        data=_prefilled_subscription_data(token),
+    )
+
+    assert response.status_code == 200
+    assert "订阅「示例剧」已创建" in response.text
+    assert "已开始下载" in response.text
+    assert len(downloader.calls) == 1
+    _, actor = downloader.calls[0]
+    assert actor == "admin"
+
+    with client.app.state.db.read() as conn:  # type: ignore[attr-defined]
+        sub = conn.execute("SELECT * FROM subscription").fetchone()
+        torrent = conn.execute("SELECT * FROM torrent").fetchone()
+    assert sub["library_category"] == "动漫"
+    assert torrent["subscription_id"] == sub["id"]
+    assert torrent["mt_id"] == "101"
+    assert torrent["discount"] == "FREE"
+    assert torrent["category"] == "402"
+    assert torrent["seeders"] == 12
+
+
+def test_create_subscription_ignores_invalid_torrent_id(
+    client: TestClient,
+) -> None:
+    login(client)
+    downloader = RecordingDownloader()
+    client.app.state.downloader = downloader  # type: ignore[attr-defined]
+    token = csrf(client, "/subscriptions/new")
+    data = _prefilled_subscription_data(token)
+    data["mt_id"] = "not-a-number"
+
+    response = client.post("/subscriptions/new", data=data)
+
+    assert response.status_code == 200
+    assert "订阅「示例剧」已创建" in response.text
+    assert downloader.calls == []
+    with client.app.state.db.read() as conn:  # type: ignore[attr-defined]
+        assert conn.execute("SELECT COUNT(*) AS n FROM torrent").fetchone()["n"] == 0
+
+
+def test_create_subscription_keeps_subscription_when_grab_fails(
+    client: TestClient,
+) -> None:
+    login(client)
+
+    class FailingDownloader:
+        def grab(self, torrent_id: int, *, actor: str = "manual") -> GrabResult:
+            raise Conflict("分享率过低，已暂停抓取")
+
+    client.app.state.downloader = FailingDownloader()  # type: ignore[attr-defined]
+    token = csrf(client, "/subscriptions/new")
+
+    response = client.post(
+        "/subscriptions/new",
+        data=_prefilled_subscription_data(token),
+    )
+
+    assert response.status_code == 200
+    assert "订阅「示例剧」已创建" in response.text
+    assert "资源下载失败：分享率过低，已暂停抓取" in response.text
+    with client.app.state.db.read() as conn:  # type: ignore[attr-defined]
+        assert conn.execute("SELECT COUNT(*) AS n FROM subscription").fetchone()["n"] == 1
+
+
 def test_douban_page_ignores_unknown_filters(client: TestClient) -> None:
     login(client)
     fake = FakeDouban()
@@ -459,6 +790,48 @@ def test_douban_page_surfaces_error(client: TestClient) -> None:
     response = client.get("/douban")
     assert response.status_code == 200
     assert "豆瓣暂时不可用" in response.text
+
+
+def test_douban_cover_requires_login(client: TestClient) -> None:
+    response = client.get(
+        "/douban/cover", params={"url": DOUBAN_COVER}, follow_redirects=False
+    )
+    assert response.status_code == 303
+
+
+def test_douban_cover_proxies_image_with_cache_headers(client: TestClient) -> None:
+    login(client)
+
+    class CoverDouban:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def fetch_cover(self, url: str) -> tuple[bytes, str]:
+            self.calls.append(url)
+            return b"\xff\xd8poster", "image/jpeg"
+
+    fake = CoverDouban()
+    client.app.state.douban = fake  # type: ignore[attr-defined]
+    response = client.get("/douban/cover", params={"url": DOUBAN_COVER})
+    assert response.status_code == 200
+    assert response.content == b"\xff\xd8poster"
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "max-age=86400" in response.headers["cache-control"]
+    assert fake.calls == [DOUBAN_COVER]
+
+
+def test_douban_cover_failure_returns_404(client: TestClient) -> None:
+    login(client)
+
+    class FailingCover:
+        def fetch_cover(self, url: str) -> tuple[bytes, str]:
+            raise DoubanError("bad cover")
+
+    client.app.state.douban = FailingCover()  # type: ignore[attr-defined]
+    response = client.get("/douban/cover", params={"url": DOUBAN_COVER})
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == "no-store"
 
 
 # ---------- subscriptions ----------
@@ -1110,6 +1483,54 @@ def test_settings_search_budget_updates_limiter_without_restart(client: TestClie
     assert response.status_code == 200
     assert "search_daily_budget 必须在 1..100000" in response.text
     assert settings_store.get_value(db, "search_daily_budget") is None
+
+
+def test_settings_search_interval_updates_limiter_without_restart(
+    client: TestClient,
+) -> None:
+    login(client)
+    from app.services import settings_store
+
+    db = client.app.state.db  # type: ignore[attr-defined]
+    limiter = client.app.state.limiter  # type: ignore[attr-defined]
+    env_interval = client.app.state.settings.mt_search_min_interval_sec  # type: ignore[attr-defined]
+
+    token = csrf(client, "/settings")
+    payload = dict(SETTINGS_FORM)
+    payload.update({"search_min_interval_sec": "30", "csrf_token": token})
+    response = client.post("/settings", data=payload, follow_redirects=False)
+    assert response.status_code == 303
+    assert settings_store.effective_search_min_interval(db, env_interval) == 30
+    limiter.acquire("search")
+    with pytest.raises(RateLimitBusy):
+        limiter.acquire("search", wait=False)
+
+    page = client.get("/settings")
+    assert 'name="search_min_interval_sec"' in page.text
+    assert 'value="30"' in page.text
+
+    token = csrf(client, "/settings")
+    payload = dict(SETTINGS_FORM)
+    payload.update({"search_min_interval_sec": "0", "csrf_token": token})
+    response = client.post("/settings", data=payload, follow_redirects=False)
+    assert response.status_code == 303
+    assert settings_store.effective_search_min_interval(db, env_interval) == 0
+    limiter.acquire("search", wait=False)
+
+    # Blank removes the override and falls back to the .env default.
+    token = csrf(client, "/settings")
+    payload = dict(SETTINGS_FORM)
+    payload["csrf_token"] = token
+    client.post("/settings", data=payload, follow_redirects=False)
+    assert settings_store.get_value(db, settings_store.SEARCH_MIN_INTERVAL_KEY) is None
+    assert settings_store.effective_search_min_interval(db, env_interval) == env_interval
+
+    token = csrf(client, "/settings")
+    payload = dict(SETTINGS_FORM)
+    payload.update({"search_min_interval_sec": "-1", "csrf_token": token})
+    response = client.post("/settings", data=payload, follow_redirects=True)
+    assert "search_min_interval_sec 必须在 0..86400" in response.text
+    assert settings_store.get_value(db, settings_store.SEARCH_MIN_INTERVAL_KEY) is None
 
 
 def test_settings_rejects_invalid_json(client: TestClient) -> None:

@@ -507,6 +507,7 @@ def test_4k_still_outranks_dubbed_10bit_1080p(db) -> None:
 def test_is_free() -> None:
     assert is_free("FREE")
     assert is_free("2XFREE")
+    assert is_free("_2X_FREE")
     assert not is_free("2X")
     assert not is_free("50%")
     assert not is_free(None)

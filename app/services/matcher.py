@@ -26,7 +26,7 @@ from . import profile_guard, settings_store
 from .profile_guard import GuardState
 from .storage import disk_usage
 
-FREE_DISCOUNTS = {"FREE", "2XFREE"}
+FREE_DISCOUNTS = {"FREE", "2XFREE", "2X_FREE", "_2X_FREE"}
 ACTIVE_STATES = {"candidate", "grabbed", "downloading", "completed", "organized"}
 DISPLAY_STATES = {"grabbed", "downloading", "completed", "organized"}
 

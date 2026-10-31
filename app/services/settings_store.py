@@ -40,6 +40,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # Not seeded by ``ensure_defaults``: the .env value stays the fallback until the
 # user saves an override on the settings page.
 SEARCH_DAILY_BUDGET_KEY = "search_daily_budget"
+SEARCH_MIN_INTERVAL_KEY = "search_min_interval_sec"
 
 
 def ensure_defaults(db: Database) -> None:
@@ -101,6 +102,15 @@ def get_json(db: Database, key: str, default: Any = None) -> Any:
 def effective_search_budget(db: Database, default: int) -> int:
     """Return the settings-page override, else the .env/default budget."""
     return get_int(db, SEARCH_DAILY_BUDGET_KEY, default)
+
+
+def effective_search_min_interval(db: Database, default: int) -> int:
+    """Return the settings-page search interval, else the .env/default value.
+
+    ``0`` means no minimum interval.  Negative stored values are treated as
+    ``0`` so a bad database edit cannot produce a negative interval.
+    """
+    return max(0, get_int(db, SEARCH_MIN_INTERVAL_KEY, default))
 
 
 def set_values(db: Database, values: dict[str, str]) -> None:

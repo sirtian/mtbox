@@ -117,6 +117,9 @@ def test_search_parses_fields_and_sends_key(tmp_path: Path) -> None:
     assert result.total == 1
     item = result.items[0]
     assert item.id == "1001"
+    assert item.name == "Some.Show.S01E01.1080p.WEB-DL.H.264-GROUP"
+    assert item.title == "第一集"
+    assert item.description == "第一集"
     assert item.category == "TV Series"
     assert item.size_bytes == 2_000_000_000
     assert item.labels == ("中字", "HDR")
@@ -127,6 +130,39 @@ def test_search_parses_fields_and_sends_key(tmp_path: Path) -> None:
     assert item.visible is True
     assert item.banned is False
     assert limiter.usage().search == 1
+
+
+def test_search_sends_category_discount_and_sort_filters(tmp_path: Path) -> None:
+    client, _, seen = make_client(tmp_path, lambda request: ok(SEARCH_DATA))
+
+    result = client.search(
+        "Some Show",
+        categories=["419", "421"],
+        discount="FREE",
+        sort_field="SEEDERS",
+        sort_direction="DESC",
+    )
+
+    body = json.loads(seen[0].content)
+    assert body["categories"] == ["419", "421"]
+    assert body["discount"] == "FREE"
+    assert body["sortField"] == "SEEDERS"
+    assert body["sortDirection"] == "DESC"
+    assert result.total_pages == 1
+
+
+def test_search_rejects_unknown_sort(tmp_path: Path) -> None:
+    client, _, _ = make_client(tmp_path, lambda request: ok(SEARCH_DATA))
+    with pytest.raises(ValueError):
+        client.search("x", sort_field="createdDate")
+    with pytest.raises(ValueError):
+        client.search("x", sort_direction="down")
+
+
+def test_search_parses_total_pages(tmp_path: Path) -> None:
+    data = {**SEARCH_DATA, "total": 10000, "totalPages": 100}
+    client, _, _ = make_client(tmp_path, lambda request: ok(data))
+    assert client.search("x", page_size=100).total_pages == 100
 
 
 def test_search_list_shaped_data(tmp_path: Path) -> None:

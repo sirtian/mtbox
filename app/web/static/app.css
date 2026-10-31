@@ -214,6 +214,7 @@ table.checks tbody tr:hover td { background: rgba(255, 255, 255, .018); }
 
 table.results td,
 table.tasks td { max-width: 360px; }
+table.results td.title-cell { min-width: 200px; }
 table.tasks td:nth-child(3) { min-width: 140px; }
 table.candidates td:nth-child(1) { min-width: 240px; }
 table.candidates td:nth-child(3),
@@ -481,6 +482,8 @@ form.stack { display: flex; gap: 6px; margin-top: 6px; align-items: center; flex
 .tab-sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
 .filterbar { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin: 0 0 16px; }
 .filterbar label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.filterbar label.keyword { flex: 1 1 300px; }
+.filterbar label.keyword input { width: 100%; }
 .filterbar select { min-width: 130px; }
 .filterbar select.sub-select { min-width: 260px; max-width: 420px; }
 .filterbar .button { margin-bottom: 1px; }

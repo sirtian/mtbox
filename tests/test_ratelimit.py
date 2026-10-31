@@ -84,6 +84,31 @@ def test_search_interval_raises_when_not_waiting(db: Database, tmp_path: Path) -
     assert excinfo.value.retry_after >= 1
 
 
+def test_search_interval_reads_runtime_setting(db: Database, tmp_path: Path) -> None:
+    limiter = ApiLimiter(
+        make_settings(
+            tmp_path,
+            mt_search_min_interval_sec=30,
+            mt_search_daily_budget=10,
+        ),
+        db,
+    )
+    assert settings_store.effective_search_min_interval(db, 30) == 30
+
+    # 0 disables the interval immediately, without rebuilding the limiter.
+    settings_store.set_values(db, {settings_store.SEARCH_MIN_INTERVAL_KEY: "0"})
+    limiter.acquire("search")
+    limiter.acquire("search", wait=False)
+    assert limiter.usage().search == 2
+
+    settings_store.set_values(db, {settings_store.SEARCH_MIN_INTERVAL_KEY: "30"})
+    with pytest.raises(RateLimitBusy):
+        limiter.acquire("search", wait=False)
+
+    settings_store.delete_values(db, [settings_store.SEARCH_MIN_INTERVAL_KEY])
+    assert settings_store.effective_search_min_interval(db, 30) == 30
+
+
 def test_search_interval_is_enforced_with_wait(db: Database, tmp_path: Path) -> None:
     limiter = ApiLimiter(
         make_settings(tmp_path, mt_search_min_interval_sec=1, mt_search_daily_budget=10), db

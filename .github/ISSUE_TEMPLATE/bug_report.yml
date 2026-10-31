@@ -13,7 +13,7 @@ body:
     attributes:
       label: 版本
       description: 运行 `mtbox --version` 的输出
-      placeholder: "mtbox 0.5.0"
+      placeholder: "mtbox 0.6.3"
     validations:
       required: true
   - type: dropdown
@@ -31,7 +31,7 @@ body:
     attributes:
       label: 平台
       description: 系统、CPU 架构、Python 或镜像标签
-      placeholder: "极空间 Z4S / aarch64 / mtbox:0.5.0"
+      placeholder: "极空间 Z4S / aarch64 / mtbox:0.6.3"
     validations:
       required: true
   - type: textarea
