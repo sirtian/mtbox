@@ -1,10 +1,9 @@
 FROM python:3.11-slim
 
-# TODO(owner): 发布前把 OWNER 替换为实际 GitHub 账号/组织（见 docs/development/release.md）。
 LABEL org.opencontainers.image.title="mtbox" \
       org.opencontainers.image.description="Lightweight M-Team subscription downloader for NAS" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/OWNER/mtbox"
+      org.opencontainers.image.source="https://github.com/sirtian/mtbox"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

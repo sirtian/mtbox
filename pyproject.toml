@@ -42,10 +42,9 @@ dev = ["pytest>=8"]
 mtbox = "app.cli:main"
 
 [project.urls]
-# TODO(owner): 发布前把 OWNER 替换为实际 GitHub 账号/组织（见 docs/development/release.md）。
-Homepage = "https://github.com/OWNER/mtbox"
-Repository = "https://github.com/OWNER/mtbox"
-Issues = "https://github.com/OWNER/mtbox/issues"
+Homepage = "https://github.com/sirtian/mtbox"
+Repository = "https://github.com/sirtian/mtbox"
+Issues = "https://github.com/sirtian/mtbox/issues"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
