@@ -64,7 +64,7 @@ Open `http://NAS_IP:18080/` and sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD`
 Build the image yourself if you do not have one:
 
 ```bash
-docker build -t mtbox:0.6.3 .
+docker build -t mtbox:0.6.9 .
 ```
 
 ### Local

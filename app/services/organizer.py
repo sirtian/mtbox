@@ -27,6 +27,7 @@ from ..models import Subscription, Torrent
 from ..timeutil import parse_dt, to_iso, utc_now
 from . import settings_store
 from .audit import log_event
+from .subscriptions import target_episode_range
 
 log = logging.getLogger("mtbox.organizer")
 
@@ -872,15 +873,21 @@ class Organizer:
         done = False
         if sub.kind == "movie":
             done = True
-        elif sub.episode_to is not None and sub.episode_from is not None:
-            with self.db.read() as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM episode_state "
-                    "WHERE subscription_id = ? AND season = ? AND state = 'organized' "
-                    "AND episode BETWEEN ? AND ?",
-                    (sub.id, sub.season, sub.episode_from, sub.episode_to),
-                ).fetchone()
-            done = int(row["n"]) >= sub.episode_to - sub.episode_from + 1
+        else:
+            # 没填“集数范围”时，订阅页用 PT/豆瓣发现的总集数作为目标
+            # （“总 12 集”），完成判断必须用同一口径，否则全部整理完仍停留
+            # 在“运行中”。
+            target = target_episode_range(sub)
+            if target is not None:
+                lower, upper = target
+                with self.db.read() as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(DISTINCT episode) AS n FROM episode_state "
+                        "WHERE subscription_id = ? AND state = 'organized' "
+                        "AND episode BETWEEN ? AND ?",
+                        (sub.id, lower, upper),
+                    ).fetchone()
+                done = int(row["n"]) >= upper - lower + 1
         if done:
             with self.db.tx() as conn:
                 conn.execute(

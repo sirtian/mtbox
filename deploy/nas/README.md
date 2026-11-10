@@ -1,6 +1,6 @@
 # 极空间 NAS 部署说明
 
-本文使用 `mtbox:0.6.3` 作为示例版本，实际请替换为你要部署的版本。
+本文使用 `mtbox:0.6.9` 作为示例版本，实际请替换为你要部署的版本。
 
 ## 1. 获取并导入镜像
 
@@ -11,15 +11,15 @@
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing
-docker load -i mtbox-0.6.3-amd64.tar
+docker load -i mtbox-0.6.9-amd64.tar
 ```
 
 **B. 本地构建**：在有 Docker 的机器（或极空间 SSH）上，于项目根目录执行：
 
 ```bash
-docker build -t mtbox:0.6.3 .
+docker build -t mtbox:0.6.9 .
 # 需要搬到极空间时
-docker save -o mtbox-0.6.3-amd64.tar mtbox:0.6.3
+docker save -o mtbox-0.6.9-amd64.tar mtbox:0.6.9
 ```
 
 不确定架构时执行 `uname -m`：`x86_64` 用 amd64，`aarch64` / `arm64` 用 arm64。
@@ -29,8 +29,8 @@ docker save -o mtbox-0.6.3-amd64.tar mtbox:0.6.3
 
 ```bash
 docker images | grep mtbox
-docker run --rm --workdir / --entrypoint python mtbox:0.6.3 -c "import app.main; print('mtbox import ok')"
-docker run --rm --workdir / --entrypoint mtbox mtbox:0.6.3 --help
+docker run --rm --workdir / --entrypoint python mtbox:0.6.9 -c "import app.main; print('mtbox import ok')"
+docker run --rm --workdir / --entrypoint mtbox mtbox:0.6.9 --help
 ```
 
 第一条应输出 `mtbox import ok`，第二条应打印 CLI 帮助。`--workdir /` 是为了
@@ -96,7 +96,7 @@ docker compose logs -f --tail=100 mtbox
 
 如果极空间只提供图形化 Docker 管理，也可以直接创建容器：
 
-- 镜像：`mtbox:0.6.3`
+- 镜像：`mtbox:0.6.9`
 - 端口：宿主机 `18080` → 容器 `8080`（容器端口可用 `PORT` 修改）
 - 挂载：`/vol1/mtbox/config` → `/config`、`/vol1/downloads` → `/downloads`、
   `/vol1/media` → `/media`
@@ -113,7 +113,7 @@ docker run -d --name mtbox --restart unless-stopped \
   -v /vol1/mtbox/config:/config \
   -v /vol1/downloads:/downloads \
   -v /vol1/media:/media \
-  mtbox:0.6.3
+  mtbox:0.6.9
 ```
 
 健康检查：

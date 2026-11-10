@@ -54,6 +54,7 @@ def setup(
     episode_end: int | None = None,
     files: list[dict[str, object]] | None = None,
     library_category: str | None = None,
+    total_episodes: int | None = None,
     qb_hash: str | None = None,
     content_path: str | None = None,
 ):
@@ -69,6 +70,7 @@ def setup(
         episode_from=episode_from,
         episode_to=episode_to,
         library_category=library_category,
+        total_episodes=total_episodes,
     )
     torrent_id = insert_torrent(
         db,
@@ -742,6 +744,51 @@ def test_mixed_video_and_documents_still_uses_video_template(tmp_path: Path) -> 
     )
     assert target.is_file()
     assert not (settings.library_dir / "电子书").exists()
+
+
+def test_subscription_finishes_when_total_episodes_are_organized(
+    tmp_path: Path,
+) -> None:
+    # 未填写“集数范围”时，PT 发现的总集数（页面上的“总 N 集”）就是完成目标。
+    settings, db, sub_id, torrent_id = setup(
+        tmp_path,
+        episode_from=1,
+        episode_to=None,
+        total_episodes=1,
+        files=[{"path": f"{NAME}/{NAME}.mkv", "size": 1024}],
+    )
+    write_source(settings, f"{NAME}/{NAME}.mkv")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    with db.read() as conn:
+        status = conn.execute(
+            "SELECT status FROM subscription WHERE id = ?", (sub_id,)
+        ).fetchone()[0]
+    assert status == "done"
+
+
+def test_subscription_stays_active_when_total_episodes_are_missing(
+    tmp_path: Path,
+) -> None:
+    settings, db, sub_id, torrent_id = setup(
+        tmp_path,
+        episode_from=1,
+        episode_to=None,
+        total_episodes=3,
+        files=[{"path": f"{NAME}/{NAME}.mkv", "size": 1024}],
+    )
+    write_source(settings, f"{NAME}/{NAME}.mkv")
+
+    result = Organizer(settings, db).organize(torrent_id, force=True)
+
+    assert result.ok, result.message
+    with db.read() as conn:
+        status = conn.execute(
+            "SELECT status FROM subscription WHERE id = ?", (sub_id,)
+        ).fetchone()[0]
+    assert status == "active"
 
 
 def test_dry_run_does_not_link(tmp_path: Path) -> None:

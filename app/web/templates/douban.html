@@ -34,6 +34,10 @@
       {% endfor %}
     </select>
   </label>
+  <label class="keyword">关键字
+    <input type="search" name="q" value="{{ q }}" maxlength="50"
+           placeholder="搜索标题 / 演员">
+  </label>
   <label>每页
     <select name="size" onchange="this.form.submit()">
       {% for option in size_options %}
@@ -42,13 +46,20 @@
     </select>
   </label>
   <button class="button primary" type="submit">筛选</button>
-  {% if year or genre %}<a class="button" href="{{ clear_url }}">清除筛选</a>{% endif %}
+  {% if year or genre or q %}<a class="button" href="{{ clear_url }}">清除筛选</a>{% endif %}
 </form>
 
 {% if chart %}
 <p class="muted small">
-  {% if year or genre %}筛选：{{ year or '全部年份' }}{% if genre %} · {{ genre }}{% endif %} · {% endif %}
-  {% if chart.total %}共约 {{ chart.total }} 条 · {% endif %}
+  {% if q and (year or genre) %}
+  搜索：关键字「{{ q }}」 · {{ year or '全部年份' }}{% if genre %} · {{ genre }}{% endif %} ·
+  匹配 {{ chart.total }} 条{% if scan_source_total %}（已扫描榜单约 {{ scan_source_total }} 条）{% endif %} ·
+  {% elif q %}
+  搜索：关键字「{{ q }}」 · 豆瓣{{ '电影' if kind == 'movie' else '剧集' }}全站 ·
+  {% elif year or genre %}
+  筛选：{{ year or '全部年份' }}{% if genre %} · {{ genre }}{% endif %} ·
+  {% endif %}
+  {% if chart.total and not (q and (year or genre)) %}共约 {{ chart.total }} 条 · {% endif %}
   第 {{ page }}{% if total_pages %} / {{ total_pages }}{% endif %} 页 · 本页 {{ items | length }} 条
   {% if chart.cached %}· 缓存{% endif %}
   {% if chart.stale %}· 豆瓣暂时不可用，显示旧缓存{% endif %}
@@ -74,7 +85,7 @@
       <span class="douban-rank">#{{ item.rank }}</span>
     </div>
     <div class="douban-body">
-      <div class="douban-title" title="{{ item.title }}">{{ item.title }}</div>
+      <div class="douban-title" title="{{ item.title }}">{{ item.title }}{% if row.subscribed %} <span class="badge badge-free">已订阅</span>{% endif %}</div>
       <div class="muted small">
         {% if item.year %}{{ item.year }} · {% endif %}
         {% if item.rating is not none %}
@@ -87,7 +98,12 @@
       {% if item.episodes_info %}<div class="small">{{ item.episodes_info }}</div>{% endif %}
       {% if item.subtitle %}<div class="muted small douban-sub">{{ item.subtitle }}</div>{% endif %}
       <div class="douban-actions">
+        {% if row.subscribed %}
+        <a class="button" href="{{ row.prefill_url }}"
+           onclick="return confirm('该内容已经订阅过，确定要重新订阅吗？继续会打开新建订阅页，可再创建一个订阅。');">已订阅 · 重新订阅</a>
+        {% else %}
         <a class="button primary" href="{{ row.prefill_url }}">订阅</a>
+        {% endif %}
         <a class="button" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">豆瓣</a>
       </div>
     </div>
@@ -95,7 +111,11 @@
   {% endfor %}
 </div>
 {% elif not error %}
-{% if year or genre %}
+{% if q and (year or genre) %}
+<p class="hint">当前年份/类别下（已扫描榜单约 {{ scan_source_total }} 条）没有匹配「{{ q }}」的条目。可放宽年份或类别，或切到「全部年份 / 全部类别」后再搜。</p>
+{% elif q %}
+<p class="hint">豆瓣搜索没有找到匹配「{{ q }}」的{{ '电影' if kind == 'movie' else '剧集' }}。换个关键字或切换类型再试；如果豆瓣有结果，也可以复制豆瓣 ID 到新建订阅页手动填写。</p>
+{% elif year or genre %}
 <p class="hint">当前筛选下没有条目，试试放宽年份或类别，或点“清除筛选”。</p>
 {% elif page > 1 %}
 <p class="hint">这一页没有更多条目了，点“上一页”返回，或用页码跳转调整。</p>
@@ -122,6 +142,7 @@
     <input type="hidden" name="sort" value="{{ sort }}">
     {% if year %}<input type="hidden" name="year" value="{{ year }}">{% endif %}
     {% if genre %}<input type="hidden" name="genre" value="{{ genre }}">{% endif %}
+    {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
     <input type="hidden" name="size" value="{{ size }}">
     <label class="muted small" for="page-jump-input">跳到第</label>
     <input id="page-jump-input" type="number" name="page" min="1"

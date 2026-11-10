@@ -71,6 +71,12 @@ _COVER_PATH = re.compile(
 )
 _COVER_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 _COVER_MAX_BYTES = 2 * 1024 * 1024
+# The mobile search API returns signed poster URLs on rotating
+# ``qnmob<N>-sign.doubanio.com`` hosts.  The signature lives in the query
+# string, so these hosts are accepted with a strictly validated query; plain
+# CDN hosts still must not carry one.
+_SIGNED_COVER_HOST = re.compile(r"^qnmob\d+-sign\.doubanio\.com$")
+_SIGNED_COVER_QUERY = re.compile(r"^[A-Za-z0-9_=&%,./:+-]{1,300}$")
 _COVER_CACHE_TTL = 6 * 3600
 _COVER_CACHE_MAX_ITEMS = 256
 _COVER_CACHE_MAX_BYTES = 32 * 1024 * 1024
@@ -89,9 +95,16 @@ def normalize_cover_url(value: Any) -> str | None:
         parts = urlsplit(value)
     except ValueError:
         return None
-    if parts.scheme != "https" or parts.netloc.lower() not in _COVER_HOSTS:
+    host = parts.netloc.lower()
+    signed_host = bool(_SIGNED_COVER_HOST.fullmatch(host))
+    if parts.scheme != "https" or (host not in _COVER_HOSTS and not signed_host):
         return None
-    if parts.query or parts.fragment or parts.username or parts.password:
+    if parts.fragment or parts.username or parts.password:
+        return None
+    if signed_host:
+        if not _SIGNED_COVER_QUERY.fullmatch(parts.query):
+            return None
+    elif parts.query:
         return None
     if not _COVER_PATH.fullmatch(parts.path):
         return None
@@ -122,6 +135,22 @@ class DoubanChart:
     sort: str
     items: tuple[DoubanItem, ...]
     total: int
+    fetched_at: str
+    cached: bool = False
+    stale: bool = False
+    has_more: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DoubanSearch:
+    """One page of Douban's site-wide subject search."""
+
+    q: str
+    kind: str
+    items: tuple[DoubanItem, ...]
+    total: int
+    start: int
+    count: int
     fetched_at: str
     cached: bool = False
     stale: bool = False
@@ -218,6 +247,49 @@ def _cover(raw: Any) -> str | None:
     return None
 
 
+def _search_item(raw: Any, kind: str, rank: int) -> DoubanItem | None:
+    """Parse one ``/search/subjects`` row, keeping only film/TV subjects."""
+    if not isinstance(raw, dict):
+        return None
+    target_type = _text(raw.get("target_type"), 20)
+    if target_type == "movie":
+        item_kind = "movie"
+    elif target_type == "tv":
+        item_kind = "tv"
+    else:
+        # Charts, books and podcasts cannot be turned into a subscription.
+        return None
+    if kind == "movie" and item_kind != "movie":
+        return None
+    if kind in ("tv", "variety") and item_kind != "tv":
+        return None
+    target = raw.get("target")
+    if not isinstance(target, dict):
+        return None
+    item_id = _digits(target.get("id") or raw.get("target_id"), 20)
+    title = _text(target.get("title"), 200)
+    if not item_id or not title:
+        return None
+    rating = target.get("rating") if isinstance(target.get("rating"), dict) else {}
+    rating_value = _float(rating.get("value"))
+    rating_count = _int(rating.get("count"))
+    if rating_value == 0 or not rating_count:
+        rating_value = None
+    return DoubanItem(
+        id=item_id,
+        kind=item_kind,
+        title=title,
+        year=_year(target.get("year")),
+        rating=rating_value,
+        rating_count=rating_count,
+        subtitle=_text(target.get("card_subtitle"), 500),
+        episodes_info=_text(target.get("episodes_info"), 100),
+        cover_url=normalize_cover_url(target.get("cover_url")),
+        url=f"https://movie.douban.com/subject/{item_id}/",
+        rank=rank,
+    )
+
+
 class DoubanClient:
     def __init__(
         self,
@@ -242,6 +314,9 @@ class DoubanClient:
             trust_env=trust_env,
         )
         self._cache: dict[tuple[str, str, int, int, str], tuple[float, DoubanChart]] = {}
+        self._search_cache: dict[
+            tuple[str, str, int, int], tuple[float, DoubanSearch]
+        ] = {}
         self._episode_cache: dict[str, tuple[float, DoubanEpisodes]] = {}
         self._cover_cache: dict[str, tuple[float, bytes, str]] = {}
         self._cover_cache_bytes = 0
@@ -448,6 +523,97 @@ class DoubanClient:
                 break
         return collected, total
 
+    def search(
+        self,
+        kind: str,
+        q: str,
+        *,
+        start: int = 0,
+        count: int = 20,
+        refresh: bool = False,
+    ) -> DoubanSearch:
+        """Search Douban's whole film/TV catalogue by keyword.
+
+        The chart endpoint has no keyword parameter, so filtering a single
+        fetched chart page misses titles that are on another page, another
+        sort order or not in the chart at all.  The mobile search endpoint
+        covers the full catalogue and returns the same subject fields.
+        """
+        if kind not in DOUBAN_KINDS:
+            raise ValueError(f"未知豆瓣类型: {kind}")
+        query = " ".join(str(q or "").split())[:50]
+        if not query:
+            raise ValueError("搜索关键字不能为空")
+        start = max(0, int(start))
+        count = min(100, max(1, int(count)))
+        key = (kind, query, start, count)
+        now = time.monotonic()
+        if not refresh and self.cache_sec:
+            cached = self._search_cache.get(key)
+            if cached and now - cached[0] < self.cache_sec:
+                return replace(cached[1], cached=True)
+
+        try:
+            # The search endpoint also caps one response at 50 rows.
+            raw_items: list[Any] = []
+            total = 0
+            offset = start
+            remaining = count
+            first = True
+            while remaining > 0:
+                take = min(self._RECOMMEND_CHUNK, remaining)
+                response = self._client.get(
+                    "/rexxar/api/v2/search/subjects",
+                    params={"q": query, "start": offset, "count": take},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise DoubanError("豆瓣搜索返回了无法识别的数据")
+                subjects = payload.get("subjects")
+                if not isinstance(subjects, dict):
+                    raise DoubanError("豆瓣搜索返回了无法识别的数据")
+                page_items = subjects.get("items")
+                if not isinstance(page_items, list):
+                    raise DoubanError("豆瓣搜索返回了无法识别的数据")
+                if first:
+                    total = _int(subjects.get("total"), 0)
+                    first = False
+                raw_items.extend(page_items)
+                offset += len(page_items)
+                remaining -= len(page_items)
+                if len(page_items) < take:
+                    break
+        except DoubanError:
+            cached = self._search_cache.get(key)
+            if cached:
+                return replace(cached[1], cached=True, stale=True)
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            cached = self._search_cache.get(key)
+            if cached:
+                return replace(cached[1], cached=True, stale=True)
+            raise DoubanError(f"豆瓣搜索失败: {exc}") from exc
+
+        items: list[DoubanItem] = []
+        for index, raw in enumerate(raw_items):
+            item = _search_item(raw, kind, start + index + 1)
+            if item is not None:
+                items.append(item)
+        result = DoubanSearch(
+            q=query,
+            kind=kind,
+            items=tuple(items),
+            total=total,
+            start=start,
+            count=count,
+            fetched_at=to_iso(utc_now()),
+            has_more=bool(raw_items) and start + count < total,
+        )
+        if self.cache_sec:
+            self._search_cache[key] = (now, result)
+        return result
+
     def fetch(
         self,
         kind: str = "tv",
@@ -563,3 +729,66 @@ class DoubanClient:
         if self.cache_sec:
             self._cache[key] = (now, chart)
         return chart
+
+    def scan(
+        self,
+        kind: str,
+        sort: str,
+        *,
+        year: str = "",
+        genre: str = "",
+        limit: int = 500,
+        refresh: bool = False,
+    ) -> DoubanChart:
+        """Read a filtered chart from the start, up to Douban's ~500 cap.
+
+        Keyword filtering used to look at one fetched page only.  When chart
+        filters (year/genre) are active, scan the whole filtered chart so a
+        keyword match on a later page is still found.  Every page goes through
+        ``fetch`` and therefore shares its cache.
+        """
+        if kind not in DOUBAN_KINDS:
+            raise ValueError(f"未知豆瓣类型: {kind}")
+        if sort not in DOUBAN_SORTS:
+            raise ValueError(f"未知豆瓣排序: {sort}")
+        limit = min(500, max(1, int(limit)))
+        items: list[DoubanItem] = []
+        seen: set[str] = set()
+        total = 0
+        cached = True
+        stale = False
+        fetched_at = ""
+        start = 0
+        while start < limit:
+            step = min(50, limit - start)
+            page = self.fetch(
+                kind,
+                sort,
+                start=start,
+                count=step,
+                year=year,
+                genre=genre,
+                refresh=refresh,
+            )
+            total = page.total or total
+            cached = cached and page.cached
+            stale = stale or page.stale
+            fetched_at = page.fetched_at
+            for item in page.items:
+                if item.id in seen:
+                    continue
+                seen.add(item.id)
+                items.append(item)
+            if not page.items or not page.has_more:
+                break
+            start += step
+        return DoubanChart(
+            kind=kind,
+            sort=sort,
+            items=tuple(items[:limit]),
+            total=total or len(items),
+            fetched_at=fetched_at or to_iso(utc_now()),
+            cached=cached,
+            stale=stale,
+            has_more=False,
+        )

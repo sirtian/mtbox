@@ -591,3 +591,182 @@ def test_fetch_cover_rejects_bad_upstream(response: httpx.Response) -> None:
         douban = DoubanClient(client=http)
         with pytest.raises(DoubanError):
             douban.fetch_cover(COVER)
+
+
+SIGNED_COVER = (
+    "https://qnmob3-sign.doubanio.com/view/photo/large/public/p1.jpg"
+    "?sa_cv=abc123&sa_ct=456&imageView2/0/q/80/w/9999/h/120/format/jpg"
+)
+
+
+def search_payload() -> dict[str, object]:
+    return {
+        "subjects": {
+            "total": 3,
+            "start": 0,
+            "count": 20,
+            "items": [
+                {
+                    "target_type": "tv",
+                    "target_id": "36942992",
+                    "target": {
+                        "id": "36942992",
+                        "title": "走马上任",
+                        "year": "2026",
+                        "card_subtitle": "中国大陆 / 剧情 喜剧",
+                        "rating": {"value": 0, "count": 0},
+                        "cover_url": SIGNED_COVER,
+                    },
+                },
+                {
+                    "target_type": "chart",
+                    "target": {"id": "tv_hot", "title": "实时热门电视"},
+                },
+                {
+                    "target_type": "movie",
+                    "target_id": "123",
+                    "target": {
+                        "id": "123",
+                        "title": "示例电影",
+                        "year": "2024",
+                        "card_subtitle": "美国 / 科幻",
+                        "rating": {"value": 7.5, "count": 10},
+                    },
+                },
+            ],
+        }
+    }
+
+
+def test_search_reads_site_wide_results_and_caches() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=search_payload())
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        douban = DoubanClient(client=http, cache_sec=600)
+        first = douban.search("tv", "走马上任")
+        second = douban.search("tv", "走马上任")
+
+    assert len(calls) == 1
+    assert calls[0].url.path == "/rexxar/api/v2/search/subjects"
+    assert calls[0].url.params["q"] == "走马上任"
+    assert calls[0].url.params["start"] == "0"
+    assert calls[0].url.params["count"] == "20"
+    assert first.total == 3
+    assert second.cached is True
+    assert len(first.items) == 1
+    item = first.items[0]
+    assert item.id == "36942992"
+    assert item.title == "走马上任"
+    assert item.kind == "tv"
+    assert item.year == 2026
+    assert item.rating is None
+    assert item.cover_url == SIGNED_COVER
+    assert item.rank == 1
+
+
+def test_search_filters_by_requested_kind() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=search_payload())
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        douban = DoubanClient(client=http, cache_sec=0)
+        movies = douban.search("movie", "示例")
+        variety = douban.search("variety", "走马上任")
+
+    assert [item.id for item in movies.items] == ["123"]
+    assert movies.items[0].kind == "movie"
+    assert [item.id for item in variety.items] == ["36942992"]
+
+
+def test_search_rejects_empty_keyword() -> None:
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+        base_url="https://m.douban.com",
+    ) as http:
+        with pytest.raises(ValueError):
+            DoubanClient(client=http).search("tv", "   ")
+
+
+def test_search_wraps_http_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="busy")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        with pytest.raises(DoubanError):
+            DoubanClient(client=http).search("tv", "示例")
+
+
+def test_normalize_cover_url_accepts_signed_search_covers() -> None:
+    assert normalize_cover_url(SIGNED_COVER) == SIGNED_COVER
+    for value in (
+        "https://qnmob3-sign.doubanio.com/view/photo/large/public/p1.jpg",
+        "https://qnmob3-sign.doubanio.com/view/photo/large/public/p1.jpg?x=<script>",
+        "https://qnmob3-sign.doubanio.com/view/photo/large/public/p1.jpg?x=1#frag",
+        "https://qnmob3-sign.doubanio.com/not-a-poster.jpg?x=1",
+        "http://qnmob3-sign.doubanio.com/view/photo/large/public/p1.jpg?x=1",
+        "https://evil.example/view/photo/large/public/p1.jpg?x=1",
+    ):
+        assert normalize_cover_url(value) is None
+
+
+def _chart_item(index: int) -> dict[str, object]:
+    return {
+        "id": str(30000000 + index),
+        "title": f"示例{index}",
+        "year": "2026",
+        "card_subtitle": "2026 / 中国大陆 / 剧情",
+        "rating": {"value": 8.0, "count": 10},
+        "pic": {"normal": COVER},
+    }
+
+
+def test_scan_reads_the_whole_filtered_chart() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        start = int(request.url.params["start"])
+        return httpx.Response(
+            200,
+            json={"total": 120, "items": [_chart_item(start + i) for i in range(50)]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        chart = DoubanClient(client=http, cache_sec=0).scan(
+            "tv", "U", year="2026", genre="剧情", limit=100
+        )
+
+    assert len(calls) == 2
+    assert calls[0].url.path == "/rexxar/api/v2/tv/recommend"
+    assert calls[0].url.params["tags"] == "剧情,2026"
+    assert calls[0].url.params["count"] == "50"
+    assert calls[1].url.params["start"] == "50"
+    assert chart.total == 120
+    assert len(chart.items) == 100
+    assert chart.items[0].rank == 1
+    assert chart.items[-1].rank == 100
+    assert chart.cached is False
+
+
+def test_scan_stops_at_the_end_of_the_chart() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"total": 3, "items": [_chart_item(0)]})
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport, base_url="https://m.douban.com") as http:
+        chart = DoubanClient(client=http, cache_sec=0).scan("tv", "U", limit=500)
+
+    assert len(calls) == 1
+    assert len(chart.items) == 1
+    assert chart.total == 3

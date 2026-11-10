@@ -10,6 +10,7 @@ from ..db import Database
 from ..errors import Conflict, NotFound
 from ..models import Progress, Subscription
 from ..timeutil import add_minutes_iso, parse_dt, to_iso, utc_now
+from .audit import log_event
 
 KINDS = {"movie", "tv"}
 STATUSES = {"active", "paused", "done"}
@@ -30,6 +31,25 @@ _EDITABLE_INT_FIELDS = (
     "episode_to",
     "interval_min",
 )
+
+
+def target_episode_range(sub: Subscription) -> tuple[int, int] | None:
+    """Episode window used by progress and auto-completion.
+
+    An explicit ``episode_to`` wins.  Otherwise the PT/Douban-discovered
+    ``total_episodes`` is the season target — the same number the subscription
+    page shows as "总 N 集".  ``None`` means the target is still unknown (an
+    airing show with no reported total), so completeness cannot be judged.
+    """
+    if sub.kind != "tv":
+        return None
+    lower = sub.episode_from if sub.episode_from is not None else 1
+    upper = sub.episode_to
+    if upper is None and sub.total_episodes and 0 < sub.total_episodes <= 1000:
+        upper = sub.total_episodes
+    if upper is None or upper < lower:
+        return None
+    return lower, upper
 
 
 def normalize_category(value: Any) -> str | None:
@@ -261,6 +281,48 @@ class SubscriptionService:
             )
 
     # ---------- progress ----------
+
+    def target_complete(self, sub: Subscription) -> bool:
+        """Whether every episode in the subscription's target is organized."""
+        target = target_episode_range(sub)
+        if target is None:
+            return False
+        lower, upper = target
+        with self.db.read() as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT episode) AS n FROM episode_state "
+                "WHERE subscription_id = ? AND state = 'organized' "
+                "AND episode BETWEEN ? AND ?",
+                (sub.id, lower, upper),
+            ).fetchone()
+        return int(row["n"]) >= upper - lower + 1
+
+    def mark_done(self, sub_id: int) -> bool:
+        with self.db.tx() as conn:
+            cursor = conn.execute(
+                "UPDATE subscription SET status = 'done', updated_at = ? "
+                "WHERE id = ? AND status = 'active' AND deleted_at IS NULL",
+                (to_iso(utc_now()), sub_id),
+            )
+        if cursor.rowcount <= 0:
+            return False
+        log_event(
+            self.db, "INFO", "subscriptions", "订阅已完成", {"subscription_id": sub_id}
+        )
+        return True
+
+    def finish_completed(self) -> list[int]:
+        """Move active TV subscriptions whose whole target is organized to done.
+
+        Repairs subscriptions that completed before ``total_episodes`` could
+        serve as the completion target, and acts as a safety net when a
+        completion event was missed.
+        """
+        finished: list[int] = []
+        for sub in self.list(kind="tv", status="active"):
+            if self.target_complete(sub) and self.mark_done(sub.id):
+                finished.append(sub.id)
+        return finished
 
     def sync_episode_info(
         self,

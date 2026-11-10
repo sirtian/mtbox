@@ -165,7 +165,7 @@
       <td>
         <div class="row-actions">
         <a class="button" href="{{ row.prefill_url }}">预填订阅</a>
-        {% if subscriptions %}
+        {% if row.subscriptions %}
         <form method="post" action="/search/grab" class="stack">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="back" value="{{ search_query }}">
@@ -178,7 +178,7 @@
           <input type="hidden" name="category" value="{{ item.category or '' }}">
           <input type="hidden" name="publish_at" value="{{ item.created_at or '' }}">
           <select name="subscription_id">
-            {% for sub in subscriptions %}
+            {% for sub in row.subscriptions %}
             <option value="{{ sub.id }}">{{ sub.title }}（{{ '电影' if sub.kind == 'movie' else 'S%02d' | format(sub.season) }}）</option>
             {% endfor %}
           </select>

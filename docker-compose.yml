@@ -1,7 +1,7 @@
 services:
   mtbox:
     build: .
-    image: mtbox:0.6.3
+    image: mtbox:0.6.9
     container_name: mtbox
     restart: unless-stopped
     env_file:

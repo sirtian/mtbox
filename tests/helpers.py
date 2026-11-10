@@ -78,24 +78,29 @@ def insert_subscription(
     episode_from: int | None = None,
     episode_to: int | None = None,
     year: int | None = 2025,
+    douban_id: str | None = None,
     episode_offset: int = 0,
     status: str = "active",
     library_category: str | None = None,
+    total_episodes: int | None = None,
 ) -> int:
     now = utc_now_iso()
     with db.tx() as conn:
         cursor = conn.execute(
-            "INSERT INTO subscription(kind, title, year, season, episode_offset, "
-            "episode_from, episode_to, status, library_category, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO subscription(kind, title, year, douban_id, season, "
+            "episode_offset, episode_from, episode_to, total_episodes, status, "
+            "library_category, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 kind,
                 title,
                 year,
+                douban_id,
                 season,
                 episode_offset,
                 episode_from,
                 episode_to,
+                total_episodes,
                 status,
                 library_category,
                 now,

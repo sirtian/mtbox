@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import string
+from dataclasses import replace
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Form, Request
@@ -16,6 +17,7 @@ from ..clients.douban import (
     ALL_LABEL,
     DOUBAN_KINDS,
     DOUBAN_SORTS,
+    DoubanItem,
     genre_options,
     year_options,
 )
@@ -299,7 +301,7 @@ def douban_page(request: Request) -> Response:
     params = request.query_params
     session = request.session
     has_filters = any(
-        key in params for key in ("kind", "sort", "year", "genre", "size")
+        key in params for key in ("kind", "sort", "year", "genre", "q", "size")
     )
     saved = session.get("douban_filters")
     source = params if has_filters else (saved if isinstance(saved, dict) else {})
@@ -342,28 +344,98 @@ def douban_page(request: Request) -> Response:
         genre = ""
     if genre == ALL_LABEL:
         genre = ""
-    filters = {"kind": kind, "sort": sort, "year": year, "genre": genre, "size": size}
+    # 榜单接口没有关键字参数，只过滤当前页会漏掉其他页/其他排序里的条目，
+    # 因此有关键字时改用豆瓣站内搜索（覆盖整个影视目录）。
+    q = str(source.get("q") or "").strip()[:50]
+    filters = {
+        "kind": kind,
+        "sort": sort,
+        "year": year,
+        "genre": genre,
+        "q": q,
+        "size": size,
+    }
     if has_filters and session.get("douban_filters") != filters:
         session["douban_filters"] = filters
     chart = None
     error: str | None = None
     items: list[dict[str, object]] = []
+    scan_source_total = 0
     try:
         douban = getattr(state, "douban", None)
         if douban is None:
             raise DoubanError("豆瓣客户端未初始化")
-        chart = douban.fetch(
-            kind,
-            sort,
-            start=start,
-            count=size,
-            year=year,
-            genre=genre,
-            refresh=refresh,
-        )
+        if q and (year or genre):
+            # 关键字 + 榜单筛选：先按年份/类别取回整个筛选后的榜单
+            # （豆瓣上限约 500 条），再在全部条目里匹配关键字，避免只看
+            # 当前页再次漏掉后面的条目。
+            scanned = douban.scan(
+                kind, sort, year=year, genre=genre, refresh=refresh
+            )
+            scan_source_total = scanned.total
+            needle = q.casefold()
+            matched = [
+                item
+                for item in scanned.items
+                if needle in item.title.casefold()
+                or needle in item.subtitle.casefold()
+            ]
+            if matched and start >= len(matched):
+                start = ((len(matched) - 1) // size) * size
+            elif not matched:
+                start = 0
+            chart = replace(
+                scanned,
+                items=tuple(matched[start : start + size]),
+                total=len(matched),
+                has_more=start + size < len(matched),
+            )
+        elif q:
+            chart = douban.search(
+                kind, q, start=start, count=size, refresh=refresh
+            )
+        else:
+            chart = douban.fetch(
+                kind,
+                sort,
+                start=start,
+                count=size,
+                year=year,
+                genre=genre,
+                refresh=refresh,
+            )
     except DoubanError as exc:
         error = str(exc)
     else:
+        # 已订阅判断：豆瓣 ID 相同即视为同一作品；老订阅可能没有豆瓣 ID，
+        # 再用标题/原名/别名（且年份不冲突、类型相同）兜底。
+        existing_subscriptions = [
+            (
+                str(sub.douban_id).strip() if sub.douban_id else "",
+                sub.kind,
+                sub.year,
+                {
+                    name.strip().casefold()
+                    for name in (sub.title, sub.original_title, *sub.aliases)
+                    if name and name.strip()
+                },
+            )
+            for sub in state.subscriptions.list()
+        ]
+
+        def is_subscribed(item: DoubanItem) -> bool:
+            item_title = item.title.strip().casefold()
+            for douban_id, sub_kind, sub_year, names in existing_subscriptions:
+                if douban_id and douban_id == str(item.id):
+                    return True
+                if sub_kind != item.kind:
+                    continue
+                if sub_year and item.year and sub_year != item.year:
+                    continue
+                if item_title in names:
+                    return True
+            return False
+
         # 榜单当前选中的“类别”直接作为订阅的“媒体库分类”预填，
         # 这样从榜单点“订阅”就不用再手填一次。
         library_category = GENRE_CATEGORY_ALIASES.get(genre, genre)
@@ -389,6 +461,7 @@ def douban_page(request: Request) -> Response:
                     "item": item,
                     "cover_url": cover_url,
                     "prefill_url": "/subscriptions/new?" + urlencode(prefill),
+                    "subscribed": is_subscribed(item),
                 }
             )
     page = start // size + 1
@@ -406,6 +479,8 @@ def douban_page(request: Request) -> Response:
             params["year"] = year
         if genre:
             params["genre"] = genre
+        if q:
+            params["q"] = q
         for key, value in overrides.items():
             if value in (None, ""):
                 params.pop(key, None)
@@ -437,10 +512,12 @@ def douban_page(request: Request) -> Response:
         sort_links=sort_links,
         year=year,
         genre=genre,
+        q=q,
         year_options=years,
         genre_options=genres,
         all_label=ALL_LABEL,
         chart=chart,
+        scan_source_total=scan_source_total,
         items=items,
         error=error,
         refresh=refresh,
@@ -452,7 +529,7 @@ def douban_page(request: Request) -> Response:
         size_options=DOUBAN_PAGE_SIZES,
         total_pages=total_pages,
         refresh_url=link(refresh="1", start=start),
-        clear_url=link(year="", genre=""),
+        clear_url=link(year="", genre="", q=""),
         prev_url=link(start=max(0, start - size)),
         next_url=link(start=start + size),
         fetched_display=local_display(chart.fetched_at) if chart else "",
@@ -608,6 +685,8 @@ def search_page(request: Request) -> Response:
             total_pages = found.total_pages
             if total_pages <= 0 and total > 0:
                 total_pages = (total + page_size - 1) // page_size
+            matcher = Matcher(state.db)
+            all_subscriptions = subscriptions.list()
             for item in found.items:
                 parsed = parse_release(item.name)
                 kind_guess = (
@@ -636,6 +715,13 @@ def search_page(request: Request) -> Response:
                 }
                 if library_category:
                     prefill["library_category"] = library_category
+                # “下载”只能落到已有订阅：只列出类型和标题/ID 都匹配的订阅，
+                # 避免把无关作品（如纪录片种子配到某部剧）列进下拉框。
+                row_subscriptions = [
+                    sub
+                    for sub in all_subscriptions
+                    if sub.kind == kind_guess and matcher.item_plausible(sub, item)
+                ]
                 results.append(
                     {
                         "item": item,
@@ -645,6 +731,7 @@ def search_page(request: Request) -> Response:
                         "size_gb": round(item.size_bytes / (1024**3), 2),
                         "free": is_free(item.discount),
                         "prefill_url": "/subscriptions/new?" + urlencode(prefill),
+                        "subscriptions": row_subscriptions,
                     }
                 )
 

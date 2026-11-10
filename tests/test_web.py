@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.clients.douban import DoubanChart, DoubanItem
+from app.clients.douban import DoubanChart, DoubanItem, DoubanSearch
 from app.clients.mteam import MTeamSearchResult, MTeamTorrent
 from app.config import Settings
 from app.errors import Conflict, DoubanError, RateLimitBusy
@@ -230,6 +231,43 @@ def test_search_renders_results(client: TestClient) -> None:
     assert client.app.state.mt.calls[0][0] == "示例剧"  # type: ignore[attr-defined]
 
 
+def test_search_download_dropdown_only_lists_matching_subscriptions(
+    client: TestClient,
+) -> None:
+    login(client)
+    db = client.app.state.db  # type: ignore[attr-defined]
+    matching = insert_subscription(db, title="示例剧", kind="tv")
+    insert_subscription(db, title="嫁金钗", kind="tv")
+    insert_subscription(db, title="示例剧", kind="movie")
+    client.app.state.mt = FakeMT([_item()])  # type: ignore[attr-defined]
+
+    response = client.get("/search?keyword=" + quote("示例剧"))
+
+    assert response.status_code == 200
+    assert "示例剧（S01）" in response.text
+    assert "嫁金钗" not in response.text
+    assert response.text.count('name="subscription_id"') == 1
+    assert f'<option value="{matching}">' in response.text
+
+
+def test_search_hides_download_form_without_matching_subscription(
+    client: TestClient,
+) -> None:
+    login(client)
+    db = client.app.state.db  # type: ignore[attr-defined]
+    insert_subscription(db, title="嫁金钗", kind="tv")
+    insert_subscription(db, title="嫁金钗", kind="movie")
+    client.app.state.mt = FakeMT(  # type: ignore[attr-defined]
+        [_item(name="Ninho.Fame.Aint.Worth.It.2026.1080p.WEB-DL.H.264-MWeb")]
+    )
+
+    response = client.get("/search?keyword=Ninho")
+
+    assert response.status_code == 200
+    assert 'name="subscription_id"' not in response.text
+    assert "预填订阅" in response.text
+
+
 def test_search_passes_group_sort_discount_and_pagination(client: TestClient) -> None:
     login(client)
     fake = FakeMT([_item()], total_pages=5)
@@ -362,9 +400,26 @@ class FakeDouban:
         cover_url: str | None = DOUBAN_COVER,
     ) -> None:
         self.calls: list[tuple[str, str, int, int, bool, str, str]] = []
+        self.search_calls: list[tuple[str, str, int, int, bool]] = []
+        self.scan_calls: list[tuple[str, str, str, str, bool]] = []
         self.title = title
         self.total = total
         self.cover_url = cover_url
+
+    def _item(self, kind: str, rank: int) -> DoubanItem:
+        return DoubanItem(
+            id="36675942",
+            kind="tv" if kind == "variety" else kind,
+            title=self.title,
+            year=2026,
+            rating=8.2,
+            rating_count=1234,
+            subtitle="2026 / 中国大陆 / 剧情",
+            episodes_info="更新至 12 集",
+            cover_url=self.cover_url,
+            url="https://movie.douban.com/subject/36675942/",
+            rank=rank,
+        )
 
     def fetch(
         self,
@@ -381,24 +436,68 @@ class FakeDouban:
         return DoubanChart(
             kind=kind,
             sort=sort,
-            items=(
-                DoubanItem(
-                    id="36675942",
-                    kind="tv" if kind == "variety" else kind,
-                    title=self.title,
-                    year=2026,
-                    rating=8.2,
-                    rating_count=1234,
-                    subtitle="2026 / 中国大陆 / 剧情",
-                    episodes_info="更新至 12 集",
-                    cover_url=self.cover_url,
-                    url="https://movie.douban.com/subject/36675942/",
-                    rank=start + 1,
-                ),
-            ),
+            items=(self._item(kind, start + 1),),
             total=self.total,
             fetched_at=utc_now_iso(),
             has_more=start + count < self.total,
+        )
+
+    def search(
+        self,
+        kind: str,
+        q: str,
+        *,
+        start: int = 0,
+        count: int = 20,
+        refresh: bool = False,
+    ) -> DoubanSearch:
+        self.search_calls.append((kind, q, start, count, refresh))
+        item = self._item(kind, start + 1)
+        needle = q.casefold()
+        matched = needle in item.title.casefold() or needle in item.subtitle.casefold()
+        items = (item,) if matched else ()
+        return DoubanSearch(
+            q=q,
+            kind=kind,
+            items=items,
+            total=len(items),
+            start=start,
+            count=count,
+            fetched_at=utc_now_iso(),
+            has_more=False,
+        )
+
+    def scan(
+        self,
+        kind: str,
+        sort: str,
+        *,
+        year: str = "",
+        genre: str = "",
+        limit: int = 500,
+        refresh: bool = False,
+    ) -> DoubanChart:
+        self.scan_calls.append((kind, sort, year, genre, refresh))
+        other = DoubanItem(
+            id="99999999",
+            kind="tv" if kind == "variety" else kind,
+            title="无关条目",
+            year=2025,
+            rating=6.0,
+            rating_count=10,
+            subtitle="2025 / 中国大陆 / 纪录片",
+            episodes_info="",
+            cover_url=None,
+            url="https://movie.douban.com/subject/99999999/",
+            rank=2,
+        )
+        return DoubanChart(
+            kind=kind,
+            sort=sort,
+            items=(self._item(kind, 1), other),
+            total=2,
+            fetched_at=utc_now_iso(),
+            has_more=False,
         )
 
 
@@ -424,6 +523,57 @@ def test_douban_page_renders_and_prefills(client: TestClient) -> None:
     refreshed = client.get("/douban?kind=movie&sort=R&refresh=1")
     assert refreshed.status_code == 200
     assert fake.calls[-1] == ("movie", "R", 0, 20, True, "", "")
+
+
+def test_douban_page_marks_subscribed_items_and_confirms_resubscribe(
+    client: TestClient,
+) -> None:
+    login(client)
+    fake = FakeDouban()
+    client.app.state.douban = fake  # type: ignore[attr-defined]
+    db = client.app.state.db  # type: ignore[attr-defined]
+
+    baseline = client.get("/douban?kind=tv&sort=U")
+    assert baseline.status_code == 200
+    assert "已订阅" not in baseline.text
+    assert ">订阅</a>" in baseline.text
+
+    insert_subscription(db, title="其他剧", douban_id="36675942", year=2020)
+    response = client.get("/douban?kind=tv&sort=U")
+    assert response.status_code == 200
+    assert 'class="badge badge-free">已订阅</span>' in response.text
+    assert "已订阅 · 重新订阅" in response.text
+    assert "confirm('该内容已经订阅过，确定要重新订阅吗？" in response.text
+    # 仍保留预填订阅入口，确认后才会打开新建订阅页。
+    assert "douban_id=36675942" in response.text
+
+
+def test_douban_page_matches_subscription_by_title_without_douban_id(
+    client: TestClient,
+) -> None:
+    login(client)
+    fake = FakeDouban()
+    client.app.state.douban = fake  # type: ignore[attr-defined]
+    db = client.app.state.db  # type: ignore[attr-defined]
+
+    insert_subscription(db, title="榜单示例剧", kind="tv", year=2026)
+    matched = client.get("/douban?kind=tv&sort=U")
+    assert "已订阅 · 重新订阅" in matched.text
+
+
+def test_douban_page_does_not_mark_different_year_as_subscribed(
+    client: TestClient,
+) -> None:
+    login(client)
+    fake = FakeDouban()
+    client.app.state.douban = fake  # type: ignore[attr-defined]
+    db = client.app.state.db  # type: ignore[attr-defined]
+
+    # 同年份但不同标题、或同标题但不同年份，都不是同一部作品。
+    insert_subscription(db, title="榜单示例剧", kind="tv", year=2020)
+    insert_subscription(db, title="另一部剧", kind="tv", year=2026)
+    response = client.get("/douban?kind=tv&sort=U")
+    assert "已订阅" not in response.text
 
 
 def test_douban_page_paginates(client: TestClient) -> None:
@@ -572,6 +722,66 @@ def test_douban_page_filters_by_year_and_genre(client: TestClient) -> None:
     assert "year=2024" in response.text
     assert "genre=%E5%96%9C%E5%89%A7" in response.text
     assert "清除筛选" in response.text
+
+
+def test_douban_page_filters_by_keyword(client: TestClient) -> None:
+    login(client)
+    fake = FakeDouban()
+    client.app.state.douban = fake  # type: ignore[attr-defined]
+
+    matched = client.get("/douban?kind=tv&q=" + quote("示例"))
+    assert matched.status_code == 200
+    assert "榜单示例剧" in matched.text
+    assert "关键字「示例」" in matched.text
+    assert 'value="示例"' in matched.text
+    # 关键字改用豆瓣站内搜索，不再只过滤当前榜单页。
+    assert fake.search_calls[-1] == ("tv", "示例", 0, 20, False)
+
+    # 副标题（年份/国家/类型）中的关键字也能命中。
+    typed = client.get("/douban?kind=tv&q=" + quote("剧情"))
+    assert "榜单示例剧" in typed.text
+
+    missing = client.get("/douban?kind=tv&q=" + quote("不存在的片名"))
+    assert missing.status_code == 200
+    assert "榜单示例剧" not in missing.text
+    assert "豆瓣搜索没有找到匹配" in missing.text
+    assert "清除筛选" in missing.text
+    # 翻页/清除链接保留关键字。
+    assert "q=%E4%B8%8D%E5%AD%98%E5%9C%A8" in missing.text
+
+
+def test_douban_keyword_search_respects_year_and_genre(client: TestClient) -> None:
+    login(client)
+    fake = FakeDouban()
+    client.app.state.douban = fake  # type: ignore[attr-defined]
+
+    response = client.get(
+        "/douban?kind=tv&sort=U&year=2026&genre=" + quote("剧情")
+        + "&q=" + quote("示例")
+    )
+    assert response.status_code == 200
+    # 关键字 + 筛选时按年份/类别扫描完整榜单，而不是只看当前页。
+    assert fake.scan_calls[-1] == ("tv", "U", "2026", "剧情", False)
+    assert fake.search_calls == []
+    assert "榜单示例剧" in response.text
+    assert "无关条目" not in response.text
+    assert "匹配 1 条" in response.text
+    assert "已扫描榜单约 2 条" in response.text
+    assert 'value="2026" selected' in response.text
+    assert 'value="剧情" selected' in response.text
+
+
+def test_douban_page_remembers_keyword_filter(client: TestClient) -> None:
+    login(client)
+    fake = FakeDouban()
+    client.app.state.douban = fake  # type: ignore[attr-defined]
+
+    client.get("/douban?kind=tv&q=" + quote("示例"))
+    restored = client.get("/douban")
+
+    assert restored.status_code == 200
+    assert "关键字「示例」" in restored.text
+    assert 'value="示例"' in restored.text
 
 
 def test_douban_page_remembers_filters_after_subscribe_navigation(

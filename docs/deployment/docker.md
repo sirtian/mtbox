@@ -15,7 +15,7 @@ mtbox 是单进程应用，容器内监听 `PORT`（默认 8080），数据全�
 ### 本地构建
 
 ```bash
-docker build -t mtbox:0.6.3 .
+docker build -t mtbox:0.6.9 .
 ```
 
 镜像不包含 `.env`、数据库或任何凭据；`docs/`、`tests/` 也不会进入构建上下文
@@ -26,9 +26,9 @@ docker build -t mtbox:0.6.3 .
 没有镜像仓库时，可以在有 Docker 的机器上构建后导出：
 
 ```bash
-docker save -o mtbox-0.6.3-amd64.tar mtbox:0.6.3
+docker save -o mtbox-0.6.9-amd64.tar mtbox:0.6.9
 # 复制到目标机器
-docker load -i mtbox-0.6.3-amd64.tar
+docker load -i mtbox-0.6.9-amd64.tar
 ```
 
 如果项目提供了 GitHub Release 镜像包，优先使用对应架构的归档，并校验 `SHA256SUMS`：
@@ -45,7 +45,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 ```yaml
 services:
   mtbox:
-    image: mtbox:0.6.3
+    image: mtbox:0.6.9
     container_name: mtbox
     restart: unless-stopped
     env_file: .env

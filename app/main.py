@@ -118,6 +118,8 @@ def create_app(
         check_lock = threading.Lock()
         notifier = Notifier(db)
         subscriptions = SubscriptionService(db)
+        # 修复历史数据：目标集数已全部整理完成、但状态仍停在 active 的订阅。
+        subscriptions.finish_completed()
         downloader = DownloadService(app_settings, db, mt, qb, notifier=notifier)
         poller = Poller(db, qb)
         organizer = Organizer(app_settings, db, notifier=notifier, qb=qb)

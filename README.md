@@ -60,7 +60,7 @@ docker compose up -d
 没有现成镜像时，在项目根目录构建：
 
 ```bash
-docker build -t mtbox:0.6.3 .
+docker build -t mtbox:0.6.9 .
 ```
 
 也可以使用 `docker save` / `docker load` 在离线机器之间搬运镜像，详见
